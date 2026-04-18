@@ -1,0 +1,154 @@
+name: Release builds
+
+# Scatta su push di tag v* (es. v1.0.0, v1.0.1). Builda i binari per
+# Windows e macOS e li allega a una GitHub Release con lo stesso nome.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag della release (es. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Windows: Scrinium.exe + Scrinium-Setup.exe
+  # -------------------------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Scrinium.exe
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name Scrinium `
+            --collect-submodules apscheduler `
+            scrinium/__main__.py
+
+      - name: Build Scrinium-Setup.exe
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name Scrinium-Setup `
+            --add-data "dist/Scrinium.exe;." `
+            installer_app/setup.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            dist/Scrinium.exe
+            dist/Scrinium-Setup.exe
+
+  # -------------------------------------------------------------------------
+  # macOS: Scrinium.app + Scrinium.dmg
+  # -------------------------------------------------------------------------
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Scrinium.app
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed \
+            --name Scrinium \
+            --osx-bundle-identifier it.arcella.scrinium \
+            --collect-submodules apscheduler \
+            scrinium/__main__.py
+
+      - name: Package Scrinium.dmg
+        run: |
+          mkdir -p dist/dmg-staging
+          cp -R dist/Scrinium.app dist/dmg-staging/
+          ln -s /Applications dist/dmg-staging/Applications
+          hdiutil create -volname "Scrinium" \
+            -srcfolder dist/dmg-staging \
+            -ov -format UDZO \
+            dist/Scrinium.dmg
+          rm -rf dist/dmg-staging
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/Scrinium.dmg
+
+  # -------------------------------------------------------------------------
+  # Pubblica la release con tutti gli asset
+  # -------------------------------------------------------------------------
+  publish:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: release-assets
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: release-assets
+
+      - name: Determina il tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Scrinium ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          files: release-assets/*
+          body: |
+            ## Scrinium ${{ steps.tag.outputs.tag }}
+
+            Software libero di backup incrementale con verifica d'integrità
+            SHA-256, scheduler integrato e multi-profilo.
+
+            ### Download
+
+            - **Windows (installer):** `Scrinium-Setup.exe` — doppio click e installa
+            - **Windows (portable):** `Scrinium.exe` — nessuna installazione
+            - **macOS:** `Scrinium.dmg` — apri, trascina in Applicazioni
+
+            ### Note
+
+            Gli eseguibili non sono firmati digitalmente. Al primo avvio:
+            - Windows: SmartScreen può chiedere conferma → *Ulteriori info → Esegui comunque*
+            - macOS: tasto destro → *Apri*, oppure *Impostazioni → Privacy e sicurezza*
+
+            ---
+            *Autore: Avv. Roberto Arcella*

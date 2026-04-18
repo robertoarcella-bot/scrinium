@@ -1,0 +1,2 @@
+PyQt6>=6.6
+APScheduler>=3.10
