@@ -15,6 +15,7 @@ import fnmatch
 import logging
 import os
 import shutil
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,26 @@ from scrinium.core.profile import BackupProfile
 log = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024  # 1 MiB
+
+
+def _win_long(path) -> str:
+    """Restituisce il percorso in forma utilizzabile anche oltre MAX_PATH (260).
+
+    Su Windows antepone il prefisso ``\\\\?\\`` (o ``\\\\?\\UNC\\`` per percorsi
+    di rete), che bypassa il limite storico di 260 caratteri delle Win32 API.
+    Richiede percorsi assoluti e normalizzati. Su altre piattaforme
+    restituisce semplicemente ``str(path)``.
+    """
+    s = str(path)
+    if sys.platform != "win32":
+        return s
+    if s.startswith("\\\\?\\"):
+        return s
+    abs_s = os.path.abspath(s)
+    if abs_s.startswith("\\\\"):
+        # UNC path \\server\share\... -> \\?\UNC\server\share\...
+        return "\\\\?\\UNC\\" + abs_s[2:]
+    return "\\\\?\\" + abs_s
 
 # ---------------------------------------------------------------------------
 # Tipi di supporto
@@ -141,8 +162,8 @@ def _is_excluded(rel_path: str, patterns: list[str]) -> bool:
 
 def _files_differ_size_mtime(src: Path, dst: Path) -> bool:
     try:
-        s = src.stat()
-        d = dst.stat()
+        s = os.stat(_win_long(src))
+        d = os.stat(_win_long(dst))
     except OSError:
         return True
     if s.st_size != d.st_size:
@@ -217,14 +238,19 @@ def _copy_with_throttle(
 
     Se throttle_mb_s <= 0, nessun limite.
     """
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Usa sempre percorsi con prefisso \\?\ su Windows per evitare
+    # il limite MAX_PATH (260 caratteri) sui path profondi/lunghi.
+    src_s = _win_long(src)
+    dst_s = _win_long(dst)
+    os.makedirs(_win_long(dst.parent), exist_ok=True)
     bytes_per_sec = int(throttle_mb_s * 1024 * 1024) if throttle_mb_s > 0 else 0
     written_in_window = 0
     window_start = time.monotonic()
 
     tmp = dst.with_suffix(dst.suffix + ".scrinium-part")
+    tmp_s = _win_long(tmp)
     try:
-        with open(src, "rb") as fi, open(tmp, "wb") as fo:
+        with open(src_s, "rb") as fi, open(tmp_s, "wb") as fo:
             while True:
                 if control.should_stop:
                     raise InterruptedError("Backup interrotto dall'utente")
@@ -245,13 +271,13 @@ def _copy_with_throttle(
                         written_in_window = 0
                         window_start = time.monotonic()
         # Preserva metadati (mtime, permessi)
-        shutil.copystat(src, tmp)
-        os.replace(tmp, dst)
+        shutil.copystat(src_s, tmp_s)
+        os.replace(tmp_s, dst_s)
     except Exception:
         # Rimuovi file temporaneo in caso di errore
         try:
-            if tmp.exists():
-                tmp.unlink()
+            if os.path.exists(tmp_s):
+                os.remove(tmp_s)
         except OSError:
             pass
         raise
@@ -295,7 +321,7 @@ class BackupEngine:
             return self.report
 
         try:
-            dst.mkdir(parents=True, exist_ok=True)
+            os.makedirs(_win_long(dst), exist_ok=True)
         except OSError as e:
             msg = f"Impossibile creare destinazione: {e}"
             log.error(msg)
@@ -468,7 +494,7 @@ class BackupEngine:
                 break
             path = destination / rel
             try:
-                path.unlink()
+                os.remove(_win_long(path))
                 self.report.files_deleted += 1
             except OSError as e:
                 log.warning("Impossibile eliminare %s: %s", path, e)
@@ -559,8 +585,8 @@ class BackupEngine:
                     lines.append(f"  - {path}: {err}")
             lines.append("")
 
-            destination.mkdir(parents=True, exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
+            os.makedirs(_win_long(destination), exist_ok=True)
+            with open(_win_long(log_path), "a", encoding="utf-8") as f:
                 f.write("\n".join(lines))
                 f.write("\n")
         except Exception:

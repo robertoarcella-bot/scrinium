@@ -27,7 +27,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "Scrinium"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_PUBLISHER = (
     "Avv. Roberto Arcella e Commissione Informatica del "
     "Consiglio dell'Ordine degli Avvocati di Napoli"
