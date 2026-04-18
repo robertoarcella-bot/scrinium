@@ -96,9 +96,12 @@ class BackupReport:
     files_failed: int = 0
     bytes_copied: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)  # (path, error)
+    was_interrupted: bool = False  # True se stop richiesto dall'utente
 
     @property
     def status(self) -> str:
+        if self.was_interrupted:
+            return "interrupted"
         if self.files_failed == 0:
             return "success"
         if self.files_copied + self.files_updated > 0:
@@ -322,6 +325,7 @@ class BackupEngine:
         self.control = control or RunControl()
         self.report = BackupReport()
         self._last_emit_at: float = 0.0
+        self._last_checkpoint_at: float = 0.0
 
     # -- API pubblica -------------------------------------------------------
 
@@ -331,95 +335,116 @@ class BackupEngine:
         dst = Path(p.destination)
 
         self.report.started_at = time.time()
+        self._last_checkpoint_at = time.monotonic()
         log.info("[%s] START %s -> %s mode=%s", p.name, src, dst, p.mode)
 
-        if not src.exists() or not src.is_dir():
-            msg = f"Sorgente non trovata o non è una cartella: {src}"
-            log.error(msg)
-            self.report.failures.append((str(src), msg))
-            self.report.files_failed = 1
-            self.report.ended_at = time.time()
-            return self.report
-
         try:
-            os.makedirs(_win_long(dst), exist_ok=True)
-        except OSError as e:
-            msg = f"Impossibile creare destinazione: {e}"
-            log.error(msg)
-            self.report.failures.append((str(dst), msg))
-            self.report.files_failed = 1
-            self.report.ended_at = time.time()
-            return self.report
-
-        # 1) Scan sorgente
-        items = _scan_source(src, p.exclude_patterns, self.control, self.on_progress)
-        total_bytes = sum(s for _, _, s in items)
-
-        prog = Progress(
-            phase="copy",
-            files_total=len(items),
-            bytes_total=total_bytes,
-            message="Avvio copia...",
-        )
-        self._emit(prog, force=True)
-
-        # 2) Copia
-        for src_path, rel, size in items:
-            if self.control.should_stop:
-                break
-            self.control.wait_if_paused()
-
-            dst_path = dst / rel
-            prog.current_file = rel
-            prog.message = f"Copia: {rel}"
-            self._emit(prog)
+            if not src.exists() or not src.is_dir():
+                msg = f"Sorgente non trovata o non è una cartella: {src}"
+                log.error(msg)
+                self.report.failures.append((str(src), msg))
+                self.report.files_failed = 1
+                return self.report
 
             try:
-                action = self._decide_action(src_path, dst_path)
-                if action == "skip":
-                    self.report.files_skipped += 1
-                else:
-                    self._copy_with_retries(src_path, dst_path, p, prog)
-                    if action == "copy":
-                        self.report.files_copied += 1
+                os.makedirs(_win_long(dst), exist_ok=True)
+            except OSError as e:
+                msg = f"Impossibile creare destinazione: {e}"
+                log.error(msg)
+                self.report.failures.append((str(dst), msg))
+                self.report.files_failed = 1
+                return self.report
+
+            # 1) Scan sorgente
+            items = _scan_source(src, p.exclude_patterns, self.control, self.on_progress)
+            total_bytes = sum(s for _, _, s in items)
+
+            prog = Progress(
+                phase="copy",
+                files_total=len(items),
+                bytes_total=total_bytes,
+                message="Avvio copia...",
+            )
+            self._emit(prog, force=True)
+
+            # 2) Copia
+            for src_path, rel, size in items:
+                if self.control.should_stop:
+                    break
+                self.control.wait_if_paused()
+
+                dst_path = dst / rel
+                prog.current_file = rel
+                prog.message = f"Copia: {rel}"
+                self._emit(prog)
+
+                try:
+                    action = self._decide_action(src_path, dst_path)
+                    if action == "skip":
+                        self.report.files_skipped += 1
                     else:
-                        self.report.files_updated += 1
-                    self.report.bytes_copied += size
-            except InterruptedError:
-                log.warning("Backup interrotto durante la copia di %s", rel)
-                break
-            except Exception as e:
-                log.exception("Errore copia %s", rel)
-                self.report.files_failed += 1
-                self.report.failures.append((rel, str(e)))
-                prog.errors += 1
-                # Gli errori sono sempre importanti, la GUI deve vederli
-                self._emit(prog, force=True)
+                        self._copy_with_retries(src_path, dst_path, p, prog)
+                        if action == "copy":
+                            self.report.files_copied += 1
+                        else:
+                            self.report.files_updated += 1
+                        self.report.bytes_copied += size
+                except InterruptedError:
+                    log.warning("Backup interrotto durante la copia di %s", rel)
+                    break
+                except Exception as e:
+                    log.exception("Errore copia %s", rel)
+                    self.report.files_failed += 1
+                    self.report.failures.append((rel, str(e)))
+                    prog.errors += 1
+                    # Gli errori sono sempre importanti, la GUI deve vederli
+                    self._emit(prog, force=True)
 
-            prog.files_done += 1
-            prog.bytes_done += size
-            self._emit(prog)
+                prog.files_done += 1
+                prog.bytes_done += size
+                self._emit(prog)
 
-        # 3) Mirror: rimuovi file in destinazione non più in sorgente
-        if p.mode == "mirror" and not self.control.should_stop:
-            self._mirror_cleanup(src, dst, items, prog)
+                # Checkpoint: ogni ~30s scrive una copia corrente del log,
+                # così anche in caso di kill brutale (taskkill /F) resta un
+                # report parziale leggibile nella destinazione.
+                self._maybe_checkpoint(dst)
 
-        # 4) Fine
-        self.report.ended_at = time.time()
-        prog.phase = "done"
-        prog.message = (
-            f"Completato. Copiati {self.report.files_copied}, "
-            f"aggiornati {self.report.files_updated}, "
-            f"saltati {self.report.files_skipped}, "
-            f"falliti {self.report.files_failed}."
-        )
-        self._emit(prog, force=True)
-        log.info("[%s] END status=%s %s", p.name, self.report.status, prog.message)
+            # 3) Mirror: rimuovi file in destinazione non più in sorgente
+            if p.mode == "mirror" and not self.control.should_stop:
+                self._mirror_cleanup(src, dst, items, prog)
 
-        # 5) Scrivi report .txt nella cartella di destinazione
-        self._write_destination_log(dst)
+            # 4) Fine
+            prog.phase = "done"
+            prog.message = (
+                f"Completato. Copiati {self.report.files_copied}, "
+                f"aggiornati {self.report.files_updated}, "
+                f"saltati {self.report.files_skipped}, "
+                f"falliti {self.report.files_failed}."
+            )
+            self._emit(prog, force=True)
 
-        return self.report
+            return self.report
+        finally:
+            # Aggiorna sempre il report ed il log in destinazione, anche
+            # se il run è stato interrotto (stop cooperativo) o se è stata
+            # sollevata un'eccezione non gestita a monte.
+            if self.report.ended_at == 0.0:
+                self.report.ended_at = time.time()
+            if self.control.should_stop:
+                self.report.was_interrupted = True
+            log.info(
+                "[%s] END status=%s copiati=%s aggiornati=%s saltati=%s falliti=%s",
+                p.name,
+                self.report.status,
+                self.report.files_copied,
+                self.report.files_updated,
+                self.report.files_skipped,
+                self.report.files_failed,
+            )
+            try:
+                self._write_destination_log(dst, final=True)
+            except Exception:
+                log.exception("Errore scrittura log finale in destinazione")
 
     # -- Logica interna -----------------------------------------------------
 
@@ -509,8 +534,10 @@ class BackupEngine:
         src_set = {rel for _, rel, _ in src_items}
         dst_set = _scan_destination(destination)
         to_delete = dst_set - src_set
-        # Non rimuovere mai il log scritto da Scrinium nella destinazione
+        # Non rimuovere mai i file di log scritti da Scrinium nella destinazione
         to_delete.discard("scrinium-backup.log.txt")
+        to_delete.discard("scrinium-backup.in-corso.log.txt")
+        to_delete.discard("scrinium-backup.in-corso.log.txt.tmp")
 
         for rel in to_delete:
             if self.control.should_stop:
@@ -551,15 +578,38 @@ class BackupEngine:
         except Exception:
             log.exception("Errore callback progresso")
 
-    def _write_destination_log(self, destination: Path) -> None:
+    def _maybe_checkpoint(self, destination: Path) -> None:
+        """Scrive un checkpoint se sono passati almeno 30 secondi.
+
+        Il checkpoint è un report parziale scritto in
+        `scrinium-backup.in-corso.log.txt` (file separato, sovrascritto ogni
+        volta). Serve a garantire che anche in caso di terminazione brutale
+        (taskkill /F, crash di sistema, interruzione di corrente) resti
+        traccia dell'avanzamento nella cartella di destinazione.
+        """
+        now = time.monotonic()
+        if (now - self._last_checkpoint_at) < 30.0:
+            return
+        self._last_checkpoint_at = now
+        try:
+            self._write_destination_log(destination, final=False)
+        except Exception:
+            log.exception("Errore scrittura checkpoint")
+
+    def _write_destination_log(self, destination: Path, final: bool = True) -> None:
         """Scrive un report leggibile .txt nella cartella di destinazione.
 
-        Il file `scrinium-backup.log.txt` viene aggiornato in append: conserva
-        lo storico di ogni esecuzione. Il fallimento della scrittura del log
-        non pregiudica l'esito del backup.
+        Se ``final=True`` aggiorna in append ``scrinium-backup.log.txt`` (lo
+        storico di tutti i run completati) e rimuove l'eventuale checkpoint
+        di run in corso.
+
+        Se ``final=False`` sovrascrive ``scrinium-backup.in-corso.log.txt``
+        con una fotografia del run corrente (checkpoint periodico).
+
+        Il fallimento della scrittura del log non pregiudica l'esito del
+        backup.
         """
         try:
-            log_path = destination / "scrinium-backup.log.txt"
             p = self.profile
             r = self.report
 
@@ -583,15 +633,26 @@ class BackupEngine:
                 "hash": "hash SHA-256",
             }.get(p.compare, p.compare)
 
-            status_label = {
-                "success": "SUCCESSO",
-                "partial": "PARZIALE (alcuni file non copiati)",
-                "failed": "FALLITO",
-            }.get(r.status, r.status.upper())
+            if not final:
+                status_label = "IN CORSO"
+                title = "SCRINIUM — Report di backup (IN CORSO)"
+            else:
+                status_label = {
+                    "success": "SUCCESSO",
+                    "partial": "PARZIALE (alcuni file non copiati)",
+                    "failed": "FALLITO",
+                    "interrupted": "INTERROTTO DALL'UTENTE",
+                }.get(r.status, r.status.upper())
+                title = "SCRINIUM — Report di backup"
+
+            ended_display = _ts(r.ended_at) if final else "— (in corso)"
+            duration_display = (
+                f"{r.duration_sec:.1f} s" if final else f"{max(0.0, time.time() - r.started_at):.1f} s (parziale)"
+            )
 
             lines = [
                 "=" * 72,
-                f"SCRINIUM — Report di backup",
+                title,
                 "=" * 72,
                 f"Profilo              : {p.name}",
                 f"Modalità             : {mode_label}",
@@ -601,8 +662,8 @@ class BackupEngine:
                 f"Destinazione         : {p.destination}",
                 "",
                 f"Avvio                : {_ts(r.started_at)}",
-                f"Fine                 : {_ts(r.ended_at)}",
-                f"Durata               : {r.duration_sec:.1f} s",
+                f"Fine                 : {ended_display}",
+                f"Durata               : {duration_display}",
                 "",
                 f"RISULTATO            : {status_label}",
                 "",
@@ -615,14 +676,32 @@ class BackupEngine:
             ]
             if r.failures:
                 lines.append("")
-                lines.append("Fallimenti (primi 20):")
-                for path, err in r.failures[:20]:
+                max_failures = 20 if final else 10
+                lines.append(f"Fallimenti (primi {max_failures}):")
+                for path, err in r.failures[:max_failures]:
                     lines.append(f"  - {path}: {err}")
             lines.append("")
 
             os.makedirs(_win_long(destination), exist_ok=True)
-            with open(_win_long(log_path), "a", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-                f.write("\n")
+            if final:
+                log_path = destination / "scrinium-backup.log.txt"
+                with open(_win_long(log_path), "a", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                    f.write("\n")
+                # Pulizia del checkpoint se presente
+                in_progress = destination / "scrinium-backup.in-corso.log.txt"
+                try:
+                    os.remove(_win_long(in_progress))
+                except OSError:
+                    pass
+            else:
+                in_progress = destination / "scrinium-backup.in-corso.log.txt"
+                # Scrittura atomica: tmp + rename, così il file non è mai
+                # visto troncato in caso di kill proprio durante la write.
+                tmp = destination / "scrinium-backup.in-corso.log.txt.tmp"
+                with open(_win_long(tmp), "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                    f.write("\n")
+                os.replace(_win_long(tmp), _win_long(in_progress))
         except Exception:
             log.exception("Impossibile scrivere il log in destinazione")
