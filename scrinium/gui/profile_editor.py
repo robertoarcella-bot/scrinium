@@ -167,6 +167,23 @@ class ProfileEditor(QDialog):
             ),
         )
 
+        # -- Modalità cloud --
+        self.chk_cloud = QCheckBox(
+            "Modalità cloud (Google Drive, OneDrive, iCloud...)"
+        )
+        self.chk_cloud.setChecked(self.profile.cloud_pace_mode)
+        form.addRow("Destinazione cloud", self.chk_cloud)
+        form.addRow(
+            "",
+            _hint(
+                "Attiva SE la destinazione è un'unità cloud (es. G:\\Drive condivisi). "
+                "Introduce una breve pausa tra un file e l'altro e, in caso di "
+                "errore «disco pieno» (cache locale saturata dal client cloud), "
+                "attende alcuni minuti che la coda si smaltisca prima di "
+                "riprovare, invece di fallire il file."
+            ),
+        )
+
         # -- Esclusioni --
         self.ed_excludes = QTextEdit()
         self.ed_excludes.setPlainText("\n".join(self.profile.exclude_patterns))
@@ -276,6 +293,7 @@ class ProfileEditor(QDialog):
         p.verify_hash_after_copy = self.chk_verify.isChecked()
         p.max_retries = self.sp_retries.value()
         p.throttle_mb_per_sec = self.sp_throttle.value()
+        p.cloud_pace_mode = self.chk_cloud.isChecked()
         p.exclude_patterns = [
             line.strip()
             for line in self.ed_excludes.toPlainText().splitlines()

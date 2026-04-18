@@ -11,6 +11,7 @@ Implementa:
 """
 from __future__ import annotations
 
+import errno
 import fnmatch
 import logging
 import os
@@ -409,6 +410,12 @@ class BackupEngine:
                 # report parziale leggibile nella destinazione.
                 self._maybe_checkpoint(dst)
 
+                # Modalità cloud: respira un istante fra un file e l'altro
+                # così Google Drive & co. possono smaltire la coda di upload
+                # e liberare la cache locale.
+                if p.cloud_pace_mode and p.cloud_pace_sleep_sec > 0:
+                    self._cancellable_sleep(p.cloud_pace_sleep_sec)
+
             # 3) Mirror: rimuovi file in destinazione non più in sorgente
             if p.mode == "mirror" and not self.control.should_stop:
                 self._mirror_cleanup(src, dst, items, prog)
@@ -479,7 +486,13 @@ class BackupEngine:
         last_err: Exception | None = None
         backoff = profile.retry_backoff_sec
 
-        for attempt in range(1, profile.max_retries + 1):
+        # Modalità cloud: più tentativi e backoff iniziale più alto per
+        # dare tempo al servizio cloud (Google Drive) di smaltire la coda.
+        max_retries = profile.max_retries
+        if profile.cloud_pace_mode:
+            max_retries = max(max_retries, 6)
+
+        for attempt in range(1, max_retries + 1):
             if self.control.should_stop:
                 raise InterruptedError("Stop richiesto")
             try:
@@ -503,22 +516,45 @@ class BackupEngine:
                 raise
             except Exception as e:
                 last_err = e
-                log.warning(
-                    "Tentativo %d/%d fallito per %s: %s",
-                    attempt,
-                    profile.max_retries,
-                    src,
-                    e,
-                )
-                if attempt < profile.max_retries:
-                    # Pausa con backoff, cancellabile
-                    slept = 0.0
-                    while slept < backoff and not self.control.should_stop:
-                        time.sleep(0.2)
-                        slept += 0.2
+                # Se disco/cache pieno e modalità cloud attiva, usa un'attesa
+                # molto più lunga (minuti) per dare tempo al servizio cloud
+                # di caricare la coda e liberare spazio.
+                is_enospc = isinstance(e, OSError) and e.errno == errno.ENOSPC
+                if is_enospc and profile.cloud_pace_mode:
+                    wait = max(profile.cloud_enospc_wait_sec, backoff) * (2 ** (attempt - 1))
+                    wait = min(wait, 900.0)  # cap 15 minuti
+                    log.warning(
+                        "Disco/cache pieno (Errno 28) per %s — attendo %.0fs che la coda cloud si liberi",
+                        src,
+                        wait,
+                    )
+                    prog.message = (
+                        f"Cache cloud piena, attendo {int(wait)}s e riprovo ({attempt}/{max_retries})..."
+                    )
+                    self._emit(prog, force=True)
+                else:
+                    wait = backoff
+                    log.warning(
+                        "Tentativo %d/%d fallito per %s: %s (attendo %.1fs)",
+                        attempt,
+                        max_retries,
+                        src,
+                        e,
+                        wait,
+                    )
+                if attempt < max_retries:
+                    self._cancellable_sleep(wait)
                     backoff *= 2
         if last_err:
             raise last_err
+
+    def _cancellable_sleep(self, seconds: float) -> None:
+        """Sleep che risponde a should_stop entro ~200ms."""
+        slept = 0.0
+        step = 0.2
+        while slept < seconds and not self.control.should_stop:
+            time.sleep(step)
+            slept += step
 
     def _mirror_cleanup(
         self,

@@ -47,6 +47,12 @@ class BackupProfile:
     throttle_mb_per_sec: float = 0.0  # 0 = nessun limite
     exclude_patterns: list[str] = field(default_factory=list)  # glob, es. "*.tmp"
     schedule_cron: str = ""  # cron string (APScheduler), vuoto = nessuna schedulazione
+    # Modalità "cloud": pausa tra un file e l'altro + attesa lunga quando
+    # il disco locale è saturo, così Google Drive (o simili) ha tempo di
+    # caricare la coda e liberare la cache locale prima di scrivere altro.
+    cloud_pace_mode: bool = False
+    cloud_pace_sleep_sec: float = 1.0  # pausa tra un file e l'altro
+    cloud_enospc_wait_sec: float = 120.0  # attesa iniziale su errore "disco pieno"
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     last_run: str | None = None  # ISO timestamp
     last_status: str | None = None  # "success" | "partial" | "failed"

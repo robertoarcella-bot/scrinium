@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -410,3 +410,19 @@ class MainWindow(QMainWindow):
             return
         self.scheduler.shutdown()
         super().closeEvent(event)
+
+    def changeEvent(self, event) -> None:
+        # Quando l'utente clicca il pulsante "_" nella title bar, Windows
+        # minimizza la finestra nella taskbar. Preferiamo nasconderla
+        # direttamente nella barra di sistema (tray), così da liberare
+        # completamente la taskbar. Lo scheduler continua a girare.
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.tray is not None
+            and self.windowState() & Qt.WindowState.WindowMinimized
+            and not self.isHidden()
+        ):
+            # Differito a dopo il return di changeEvent per evitare di
+            # chiamare hide() mentre Qt sta ancora aggiornando lo stato.
+            QTimer.singleShot(0, self._hide_to_tray)
+        super().changeEvent(event)
