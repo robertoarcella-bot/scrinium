@@ -105,8 +105,32 @@ class RunDialog(QDialog):
             f"Byte: {_fmt_bytes(prog.bytes_done)}/{_fmt_bytes(prog.bytes_total)}  •  "
             f"Errori: {prog.errors}"
         )
-        if prog.current_file:
-            self.log.appendPlainText(f"[{prog.phase}] {prog.current_file}")
+        # Il log widget non riceve ogni singolo file (sarebbero migliaia di
+        # righe al secondo): solo cambi di fase e milestone ogni 1000 file.
+        self._maybe_log(prog)
+
+    def _maybe_log(self, prog: Progress) -> None:
+        if not hasattr(self, "_last_logged_phase"):
+            self._last_logged_phase = ""
+            self._last_logged_milestone = -1
+            self._last_logged_errors = 0
+        if prog.phase and prog.phase != self._last_logged_phase:
+            self.log.appendPlainText(
+                f"→ Fase: {prog.phase}  ({prog.message})"
+            )
+            self._last_logged_phase = prog.phase
+        milestone = prog.files_done // 1000
+        if milestone > self._last_logged_milestone and prog.files_done > 0:
+            self.log.appendPlainText(
+                f"… {prog.files_done}/{prog.files_total} file  •  "
+                f"{_fmt_bytes(prog.bytes_done)}/{_fmt_bytes(prog.bytes_total)}"
+            )
+            self._last_logged_milestone = milestone
+        if prog.errors > self._last_logged_errors:
+            self.log.appendPlainText(
+                f"⚠ Errori cumulativi: {prog.errors} (vedi report finale per elenco)"
+            )
+            self._last_logged_errors = prog.errors
 
     def _on_finished(self, report: BackupReport) -> None:
         self.report = report

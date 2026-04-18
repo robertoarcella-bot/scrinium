@@ -1,18 +1,22 @@
 """Finestra principale di Scrinium."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStatusBar,
+    QSystemTrayIcon,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,6 +36,8 @@ from scrinium.core.scheduler import BackupScheduler
 from scrinium.gui.profile_editor import ProfileEditor
 from scrinium.gui.run_dialog import RunDialog
 
+log = logging.getLogger(__name__)
+
 
 def _fmt_dt(iso: str | None) -> str:
     if not iso:
@@ -42,11 +48,39 @@ def _fmt_dt(iso: str | None) -> str:
         return iso
 
 
+def make_app_icon(size: int = 64) -> QIcon:
+    """Icona generata a runtime: quadrato blu navy con 'S' bianca."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QColor("#1e3a8a"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(0, 0, size, size, size // 6, size // 6)
+    painter.setPen(QColor("white"))
+    font = QFont("Segoe UI", int(size * 0.55), QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pix.rect(), int(Qt.AlignmentFlag.AlignCenter), "S")
+    painter.end()
+    return QIcon(pix)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{__app_name__} — {__tagline__}")
+        # La finestra è ridimensionabile liberamente: impostiamo solo una
+        # dimensione minima, così l'utente può ingrandirla o rimpicciolirla.
+        self.setMinimumSize(640, 420)
         self.resize(1000, 560)
+        self.setWindowState(Qt.WindowState.WindowNoState)
+        self.setWindowIcon(make_app_icon())
+
+        self._really_quit = False
+        self._tray_message_shown = False
+        # Profili con run attivo (per bloccare lanci concorrenti dallo
+        # scheduler mentre un RunDialog precedente è ancora aperto).
+        self._running_profile_ids: set[str] = set()
 
         self.store = ProfileStore()
         self.scheduler = BackupScheduler(self.store, self._run_scheduled)
@@ -54,6 +88,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._build_menu()
+        self._setup_tray()
         self._refresh_table()
 
     # ------------------------------------------------------------------
@@ -109,14 +144,116 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         bar = self.menuBar()
         m_file = bar.addMenu("&File")
+
+        act_hide = QAction("Nascondi nella barra di sistema", self)
+        act_hide.setShortcut("Ctrl+H")
+        act_hide.triggered.connect(self._hide_to_tray)
+        m_file.addAction(act_hide)
+
+        m_file.addSeparator()
+
         act_quit = QAction("Esci", self)
-        act_quit.triggered.connect(self.close)
+        act_quit.setShortcut("Ctrl+Q")
+        act_quit.triggered.connect(self._quit_app)
         m_file.addAction(act_quit)
 
         m_help = bar.addMenu("&Aiuto")
         act_about = QAction("Informazioni su Scrinium...", self)
         act_about.triggered.connect(self._show_about)
         m_help.addAction(act_about)
+
+    # ------------------------------------------------------------------
+    # System tray
+    # ------------------------------------------------------------------
+
+    def _setup_tray(self) -> None:
+        """Crea l'icona nella barra di sistema con menu contestuale.
+
+        Se QSystemTrayIcon non è disponibile (ambienti molto ridotti),
+        la chiusura della finestra chiude effettivamente l'applicazione.
+        """
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = None
+            return
+
+        self.tray = QSystemTrayIcon(make_app_icon(), self)
+        self.tray.setToolTip(f"{__app_name__} — {__tagline__}")
+
+        menu = QMenu()
+        self.act_tray_show = QAction("Apri Scrinium", self)
+        self.act_tray_show.triggered.connect(self._show_from_tray)
+        menu.addAction(self.act_tray_show)
+
+        menu.addSeparator()
+
+        self.menu_tray_profiles = menu.addMenu("Esegui backup")
+        menu.aboutToShow.connect(self._rebuild_tray_profiles_menu)
+
+        menu.addSeparator()
+
+        act_quit = QAction("Esci da Scrinium", self)
+        act_quit.triggered.connect(self._quit_app)
+        menu.addAction(act_quit)
+
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
+
+    def _rebuild_tray_profiles_menu(self) -> None:
+        """Popola dinamicamente il sottomenu 'Esegui backup' con i profili."""
+        self.menu_tray_profiles.clear()
+        if not self.store.profiles:
+            act = self.menu_tray_profiles.addAction("(nessun profilo configurato)")
+            act.setEnabled(False)
+            return
+        for p in self.store.profiles:
+            a = self.menu_tray_profiles.addAction(p.name)
+            a.triggered.connect(lambda _checked, prof=p: self._run_from_tray(prof))
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_from_tray()
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _hide_to_tray(self) -> None:
+        if self.tray:
+            self.hide()
+            if not self._tray_message_shown:
+                self.tray.showMessage(
+                    __app_name__,
+                    "Scrinium continua a girare nella barra di sistema. "
+                    "Clicca sull'icona per riaprire.",
+                    make_app_icon(),
+                    4000,
+                )
+                self._tray_message_shown = True
+        else:
+            self.showMinimized()
+
+    def _run_from_tray(self, profile: BackupProfile) -> None:
+        self._show_from_tray()
+        self._launch_backup(profile)
+
+    def _quit_app(self) -> None:
+        ans = QMessageBox.question(
+            self,
+            "Uscire da Scrinium?",
+            "Uscendo, le schedulazioni automatiche non saranno più eseguite "
+            "finché non riapri l'applicazione.\n\nVuoi uscire davvero?",
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._really_quit = True
+        if self.tray:
+            self.tray.hide()
+        QApplication.instance().quit()
 
     # ------------------------------------------------------------------
     # Tabella
@@ -199,14 +336,26 @@ class MainWindow(QMainWindow):
         self._launch_backup(p)
 
     def _launch_backup(self, p: BackupProfile) -> None:
-        dlg = RunDialog(p, self)
-        dlg.exec()
-        if dlg.report is not None:
-            self.store.update_run_info(p.id, dlg.report.status, dlg.report.to_dict())
-            self._refresh_table()
+        # Se lo stesso profilo è già in esecuzione, non aprirne un secondo
+        # (evita finestre sovrapposte quando scheduler + utente coincidono).
+        if p.id in self._running_profile_ids:
+            log.info("Backup '%s' già in esecuzione, ignoro il nuovo trigger.", p.name)
             self.statusBar().showMessage(
-                f"'{p.name}' terminato con stato: {dlg.report.status}."
+                f"'{p.name}' è già in esecuzione — nuovo avvio ignorato."
             )
+            return
+        self._running_profile_ids.add(p.id)
+        try:
+            dlg = RunDialog(p, self)
+            dlg.exec()
+            if dlg.report is not None:
+                self.store.update_run_info(p.id, dlg.report.status, dlg.report.to_dict())
+                self._refresh_table()
+                self.statusBar().showMessage(
+                    f"'{p.name}' terminato con stato: {dlg.report.status}."
+                )
+        finally:
+            self._running_profile_ids.discard(p.id)
 
     # ------------------------------------------------------------------
     # About
@@ -242,5 +391,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
+        # Se è disponibile la tray e non stiamo davvero uscendo, nascondi
+        # la finestra invece di terminare l'app (lo scheduler continua).
+        if self.tray and not self._really_quit:
+            event.ignore()
+            self._hide_to_tray()
+            return
         self.scheduler.shutdown()
         super().closeEvent(event)

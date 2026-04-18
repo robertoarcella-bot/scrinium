@@ -29,6 +29,23 @@ log = logging.getLogger(__name__)
 
 CHUNK = 1024 * 1024  # 1 MiB
 
+# Minima frequenza di emissione dei progress signal verso la GUI (secondi).
+# A ~10 Hz la UI resta fluida anche con 100k+ file.
+PROGRESS_MIN_INTERVAL = 0.1
+
+# File sempre esclusi, indipendentemente dai pattern utente.
+# desktop.ini e Thumbs.db: metadati Windows, spesso protetti/proibiti
+# ~$*: file di lock temporanei di Microsoft Office
+# .DS_Store: metadati Finder su macOS
+# *.scrinium-part: file temporanei generati da Scrinium durante la copia
+_BUILTIN_EXCLUDES = (
+    "desktop.ini",
+    "Thumbs.db",
+    "~$*",
+    ".DS_Store",
+    "*.scrinium-part",
+)
+
 
 def _win_long(path) -> str:
     """Restituisce il percorso in forma utilizzabile anche oltre MAX_PATH (260).
@@ -148,10 +165,13 @@ class RunControl:
 
 
 def _is_excluded(rel_path: str, patterns: list[str]) -> bool:
-    if not patterns:
-        return False
+    """Ritorna True se il file va escluso.
+
+    Combina i pattern dell'utente con quelli built-in (sempre attivi).
+    """
     parts = rel_path.replace("\\", "/").split("/")
-    for pat in patterns:
+    all_patterns = list(patterns) + list(_BUILTIN_EXCLUDES)
+    for pat in all_patterns:
         for p in parts:
             if fnmatch.fnmatch(p, pat):
                 return True
@@ -301,6 +321,7 @@ class BackupEngine:
         self.on_progress = on_progress
         self.control = control or RunControl()
         self.report = BackupReport()
+        self._last_emit_at: float = 0.0
 
     # -- API pubblica -------------------------------------------------------
 
@@ -340,7 +361,7 @@ class BackupEngine:
             bytes_total=total_bytes,
             message="Avvio copia...",
         )
-        self._emit(prog)
+        self._emit(prog, force=True)
 
         # 2) Copia
         for src_path, rel, size in items:
@@ -372,6 +393,8 @@ class BackupEngine:
                 self.report.files_failed += 1
                 self.report.failures.append((rel, str(e)))
                 prog.errors += 1
+                # Gli errori sono sempre importanti, la GUI deve vederli
+                self._emit(prog, force=True)
 
             prog.files_done += 1
             prog.bytes_done += size
@@ -390,7 +413,7 @@ class BackupEngine:
             f"saltati {self.report.files_skipped}, "
             f"falliti {self.report.files_failed}."
         )
-        self._emit(prog)
+        self._emit(prog, force=True)
         log.info("[%s] END status=%s %s", p.name, self.report.status, prog.message)
 
         # 5) Scrivi report .txt nella cartella di destinazione
@@ -481,7 +504,7 @@ class BackupEngine:
     ) -> None:
         prog.phase = "cleanup"
         prog.message = "Rimozione file obsoleti in destinazione..."
-        self._emit(prog)
+        self._emit(prog, force=True)
 
         src_set = {rel for _, rel, _ in src_items}
         dst_set = _scan_destination(destination)
@@ -509,12 +532,24 @@ class BackupEngine:
                 except OSError:
                     pass
 
-    def _emit(self, prog: Progress) -> None:
-        if self.on_progress:
-            try:
-                self.on_progress(prog)
-            except Exception:
-                log.exception("Errore callback progresso")
+    def _emit(self, prog: Progress, force: bool = False) -> None:
+        """Invia un progress alla GUI limitando la frequenza.
+
+        Con 100k+ file, emettere su ogni file saturerebbe la UI (freeze).
+        Quindi i progress "ordinari" vengono throttled a ~10 Hz; i momenti
+        salienti (cambio fase, errori, inizio/fine) passano `force=True`
+        per essere sempre consegnati.
+        """
+        if not self.on_progress:
+            return
+        now = time.monotonic()
+        if not force and (now - self._last_emit_at) < PROGRESS_MIN_INTERVAL:
+            return
+        self._last_emit_at = now
+        try:
+            self.on_progress(prog)
+        except Exception:
+            log.exception("Errore callback progresso")
 
     def _write_destination_log(self, destination: Path) -> None:
         """Scrive un report leggibile .txt nella cartella di destinazione.

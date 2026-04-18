@@ -51,6 +51,11 @@ class BackupScheduler:
                         id=p.id,
                         replace_existing=True,
                         misfire_grace_time=3600,
+                        # Se il job precedente per lo stesso profilo è ancora
+                        # in esecuzione, APScheduler salta l'esecuzione
+                        # corrente invece di avviare un secondo run parallelo.
+                        max_instances=1,
+                        coalesce=True,
                     )
                     log.info("Schedulato profilo '%s': %s", p.name, p.schedule_cron)
                 except Exception as e:
