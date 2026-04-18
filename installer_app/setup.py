@@ -27,8 +27,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "Scrinium"
-APP_VERSION = "1.0.0"
-APP_PUBLISHER = "Avv. Roberto Arcella"
+APP_VERSION = "1.0.1"
+APP_PUBLISHER = (
+    "Avv. Roberto Arcella e Commissione Informatica del "
+    "Consiglio dell'Ordine degli Avvocati di Napoli"
+)
 APP_EXE = "Scrinium.exe"
 UNINSTALL_KEY_NAME = "Scrinium"  # chiave in HKCU\...\Uninstall
 UNINSTALL_REG_PATH = (
@@ -211,13 +214,13 @@ class InstallerApp(tk.Tk):
         ttk.Label(
             self.container,
             text=(
-                "Scrinium è un software di backup per Windows con copia "
-                "incrementale, verifica d'integrità SHA-256 e scheduler "
+                "Scrinium è un software libero e open source di backup "
+                "incrementale, con verifica d'integrità SHA-256 e scheduler "
                 "integrato.\n\n"
-                "Dal latino scrinium: la cassetta di cuoio e legno in cui "
-                "i giureconsulti romani custodivano documenti e tavolette "
-                "cerate.\n\n"
-                f"Versione: {APP_VERSION}\nAutore: {APP_PUBLISHER}\n\n"
+                "Pensato per avvocati, giuristi e studi professionali, e per "
+                "chiunque abbia necessità di custodire con cura i propri "
+                "dati e documenti.\n\n"
+                f"Versione: {APP_VERSION}\n\n"
                 "Cliccare su Avanti per continuare."
             ),
             wraplength=500,

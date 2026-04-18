@@ -10,7 +10,9 @@ incrementale**, **verifica d'integrità SHA-256**, **retry automatico con
 backoff esponenziale**, **throttling I/O** e **scheduler integrato** per
 eseguire backup automatici a orari definiti.
 
-**Autore:** Avv. Roberto Arcella  ·  roberto.arcella@gmail.com
+**Autori:** Avv. Roberto Arcella · Commissione Informatica del Consiglio dell'Ordine degli Avvocati di Napoli
+
+**Data di rilascio:** 18 aprile 2026
 
 ---
 

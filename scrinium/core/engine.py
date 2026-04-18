@@ -366,6 +366,10 @@ class BackupEngine:
         )
         self._emit(prog)
         log.info("[%s] END status=%s %s", p.name, self.report.status, prog.message)
+
+        # 5) Scrivi report .txt nella cartella di destinazione
+        self._write_destination_log(dst)
+
         return self.report
 
     # -- Logica interna -----------------------------------------------------
@@ -456,6 +460,8 @@ class BackupEngine:
         src_set = {rel for _, rel, _ in src_items}
         dst_set = _scan_destination(destination)
         to_delete = dst_set - src_set
+        # Non rimuovere mai il log scritto da Scrinium nella destinazione
+        to_delete.discard("scrinium-backup.log.txt")
 
         for rel in to_delete:
             if self.control.should_stop:
@@ -483,3 +489,79 @@ class BackupEngine:
                 self.on_progress(prog)
             except Exception:
                 log.exception("Errore callback progresso")
+
+    def _write_destination_log(self, destination: Path) -> None:
+        """Scrive un report leggibile .txt nella cartella di destinazione.
+
+        Il file `scrinium-backup.log.txt` viene aggiornato in append: conserva
+        lo storico di ogni esecuzione. Il fallimento della scrittura del log
+        non pregiudica l'esito del backup.
+        """
+        try:
+            log_path = destination / "scrinium-backup.log.txt"
+            p = self.profile
+            r = self.report
+
+            def _ts(epoch: float) -> str:
+                if not epoch:
+                    return "—"
+                from datetime import datetime as _dt
+                return _dt.fromtimestamp(epoch).strftime("%d/%m/%Y %H:%M:%S")
+
+            def _mb(n: int) -> str:
+                return f"{n / (1024*1024):.2f} MB" if n else "0 MB"
+
+            mode_label = {
+                "full": "Copia completa",
+                "incremental": "Incrementale",
+                "mirror": "Mirror (1:1)",
+            }.get(p.mode, p.mode)
+
+            compare_label = {
+                "size_mtime": "dimensione + data",
+                "hash": "hash SHA-256",
+            }.get(p.compare, p.compare)
+
+            status_label = {
+                "success": "SUCCESSO",
+                "partial": "PARZIALE (alcuni file non copiati)",
+                "failed": "FALLITO",
+            }.get(r.status, r.status.upper())
+
+            lines = [
+                "=" * 72,
+                f"SCRINIUM — Report di backup",
+                "=" * 72,
+                f"Profilo              : {p.name}",
+                f"Modalità             : {mode_label}",
+                f"Criterio di confronto: {compare_label}",
+                f"Verifica hash copia  : {'sì' if p.verify_hash_after_copy else 'no'}",
+                f"Sorgente             : {p.source}",
+                f"Destinazione         : {p.destination}",
+                "",
+                f"Avvio                : {_ts(r.started_at)}",
+                f"Fine                 : {_ts(r.ended_at)}",
+                f"Durata               : {r.duration_sec:.1f} s",
+                "",
+                f"RISULTATO            : {status_label}",
+                "",
+                f"File copiati         : {r.files_copied}",
+                f"File aggiornati      : {r.files_updated}",
+                f"File saltati         : {r.files_skipped}",
+                f"File eliminati       : {r.files_deleted}",
+                f"File falliti         : {r.files_failed}",
+                f"Byte copiati         : {_mb(r.bytes_copied)}",
+            ]
+            if r.failures:
+                lines.append("")
+                lines.append("Fallimenti (primi 20):")
+                for path, err in r.failures[:20]:
+                    lines.append(f"  - {path}: {err}")
+            lines.append("")
+
+            destination.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+                f.write("\n")
+        except Exception:
+            log.exception("Impossibile scrivere il log in destinazione")

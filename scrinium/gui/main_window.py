@@ -19,7 +19,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from scrinium import __app_name__, __author__, __author_email__, __tagline__, __version__
+from scrinium import (
+    __app_name__,
+    __authors__,
+    __release_date__,
+    __tagline__,
+    __version__,
+)
 from scrinium.core.engine import BackupReport
 from scrinium.core.profile import BackupProfile, ProfileStore
 from scrinium.core.scheduler import BackupScheduler
@@ -207,12 +213,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _show_about(self) -> None:
+        authors_html = "<br>".join(__authors__)
         QMessageBox.about(
             self,
             f"Informazioni su {__app_name__}",
             f"""
-            <h2>{__app_name__} <small>v{__version__}</small></h2>
-            <p><i>{__tagline__}</i></p>
+            <h2 style="color:#1e3a8a; margin-bottom:0;">{__app_name__}
+                <span style="color:#64748b; font-size:12pt;">v{__version__}</span>
+            </h2>
+            <p style="color:#2563eb; margin-top:4px;"><i>{__tagline__}</i></p>
             <p><b>Software libero e open source</b>, pensato per avvocati,
             giuristi e studi professionali &mdash; e più in generale per
             chiunque abbia necessità di conservare con cura e sicurezza
@@ -223,8 +232,8 @@ class MainWindow(QMainWindow):
             affidato a uno strumento di cui si possa leggere e controllare
             ogni riga di codice.</p>
             <hr>
-            <p><b>Autore:</b> {__author__}<br>
-            <b>Contatto:</b> <a href="mailto:{__author_email__}">{__author_email__}</a></p>
+            <p><b>Data di rilascio:</b> {__release_date__}</p>
+            <p><b>Autori:</b><br>{authors_html}</p>
             """,
         )
 
