@@ -81,6 +81,9 @@ class MainWindow(QMainWindow):
         # Profili con run attivo (per bloccare lanci concorrenti dallo
         # scheduler mentre un RunDialog precedente è ancora aperto).
         self._running_profile_ids: set[str] = set()
+        # Riferimento al RunDialog attualmente aperto (se presente):
+        # così dalla tray possiamo ripristinare anche la finestra di backup.
+        self._active_run_dialog = None
 
         self.store = ProfileStore()
         self.scheduler = BackupScheduler(self.store, self._run_scheduled)
@@ -221,6 +224,12 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        # Se c'è un backup in corso con la sua finestra nascosta, riaprila
+        # contestualmente.
+        if self._active_run_dialog is not None:
+            self._active_run_dialog.showNormal()
+            self._active_run_dialog.raise_()
+            self._active_run_dialog.activateWindow()
 
     def _hide_to_tray(self) -> None:
         if self.tray:
@@ -345,8 +354,9 @@ class MainWindow(QMainWindow):
             )
             return
         self._running_profile_ids.add(p.id)
+        dlg = RunDialog(p, self)
+        self._active_run_dialog = dlg
         try:
-            dlg = RunDialog(p, self)
             dlg.exec()
             if dlg.report is not None:
                 self.store.update_run_info(p.id, dlg.report.status, dlg.report.to_dict())
@@ -355,6 +365,7 @@ class MainWindow(QMainWindow):
                     f"'{p.name}' terminato con stato: {dlg.report.status}."
                 )
         finally:
+            self._active_run_dialog = None
             self._running_profile_ids.discard(p.id)
 
     # ------------------------------------------------------------------

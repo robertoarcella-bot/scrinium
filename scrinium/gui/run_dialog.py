@@ -31,6 +31,15 @@ class RunDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Backup: {profile.name}")
         self.resize(700, 480)
+        self.setMinimumSize(520, 360)
+        # Aggiungi i pulsanti 'minimizza' e 'massimizza' nella title bar
+        # (di default un QDialog ne è sprovvisto). Il backup gira in un
+        # thread separato, quindi la finestra è liberamente minimizzabile.
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        # Modal non-bloccante a livello applicazione: il main window e la
+        # tray restano comunque funzionanti (utile per mandare in tray).
+        self.setModal(False)
         self.profile = profile
         self.report: BackupReport | None = None
 
@@ -64,12 +73,23 @@ class RunDialog(QDialog):
         self.btn_resume = QPushButton("Riprendi")
         self.btn_resume.setEnabled(False)
         self.btn_stop = QPushButton("Annulla")
+        self.btn_minimize = QPushButton("Minimizza")
+        self.btn_minimize.setToolTip(
+            "Riduce a icona la finestra: il backup continua in background."
+        )
+        self.btn_hide_tray = QPushButton("Nella tray")
+        self.btn_hide_tray.setToolTip(
+            "Nasconde la finestra nella barra di sistema. Cliccare l'icona "
+            "Scrinium in basso a destra per riaprirla."
+        )
         self.btn_close = QPushButton("Chiudi")
         self.btn_close.setEnabled(False)
         btns.addWidget(self.btn_pause)
         btns.addWidget(self.btn_resume)
         btns.addWidget(self.btn_stop)
         btns.addStretch(1)
+        btns.addWidget(self.btn_minimize)
+        btns.addWidget(self.btn_hide_tray)
         btns.addWidget(self.btn_close)
         layout.addLayout(btns)
 
@@ -85,6 +105,8 @@ class RunDialog(QDialog):
         self.btn_pause.clicked.connect(self._on_pause)
         self.btn_resume.clicked.connect(self._on_resume)
         self.btn_stop.clicked.connect(self._on_stop)
+        self.btn_minimize.clicked.connect(self.showMinimized)
+        self.btn_hide_tray.clicked.connect(self._on_hide_tray)
         self.btn_close.clicked.connect(self.accept)
 
         self.thread.start()
@@ -173,7 +195,24 @@ class RunDialog(QDialog):
         if ans == QMessageBox.StandardButton.Yes:
             self.worker.stop()
 
+    def _on_hide_tray(self) -> None:
+        """Nasconde la finestra di backup e la main window, portando
+        Scrinium nella barra di sistema. Il worker del backup continua a
+        girare in thread separato.
+        """
+        self.hide()
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_hide_to_tray"):
+            parent._hide_to_tray()
+
     def closeEvent(self, event) -> None:
+        # Se il backup sta ancora girando, la chiusura della finestra con la
+        # X NON deve fermarlo: la portiamo nella tray. Così l'utente può
+        # liberare lo schermo senza perdere l'avanzamento.
+        if self.thread.isRunning() and not self.worker.control.should_stop:
+            event.ignore()
+            self._on_hide_tray()
+            return
         if self.thread.isRunning():
             self.worker.stop()
             self.thread.quit()
