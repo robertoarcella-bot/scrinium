@@ -5,6 +5,45 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.1.2 — 19 aprile 2026
+
+### Diagnostica dei crash silenti in tray
+
+Alcuni utenti segnalano che Scrinium, lasciato in tray durante un
+backup su cartella cloud (Google Drive / OneDrive), sparisce dopo
+qualche minuto senza alcuna traccia nel log: nessun *aboutToQuit*,
+nessuna icona, nessun errore visibile. Essendo l'eseguibile compilato
+in modalità *windowed* (senza console), qualsiasi eccezione Python
+non catturata oppure un crash nativo di PyQt viene perso nel nulla.
+
+Questa release aggiunge tre strumenti per catturare la causa alla
+prossima occorrenza, senza cambiare il comportamento funzionale
+dell'applicazione:
+
+- **Eccezioni Python non catturate**: un `sys.excepthook` installato
+  all'avvio scrive nel log (`%APPDATA%\Scrinium\scrinium.log`)
+  qualsiasi eccezione non gestita, sia sul thread principale sia sui
+  thread secondari (incluso il worker del backup). Livello `CRITICAL`.
+- **Crash nativi (segfault, abort C, PyQt)**: `faulthandler` abilitato
+  su file dedicato `%APPDATA%\Scrinium\faulthandler.log`. Se il
+  processo muore per un errore di memoria o un abort della libreria
+  Qt, il file conserva il traceback C di tutti i thread al momento
+  del crash.
+- **Heartbeat della tray più verboso**: il battito ogni 30 secondi
+  ora è a livello `INFO` (prima era `DEBUG`, quindi invisibile nei log
+  di produzione) e include anche lo stato del dialog di backup.
+  Permette di stabilire con precisione *quando* il processo si è
+  fermato rispetto all'ultimo segno di vita.
+
+### Worker di backup resiliente alle eccezioni
+
+Il `BackupWorker` (il `QThread` che fa girare il motore) avvolge ora
+`engine.run()` in un `try/except BaseException`: un'eccezione nel
+worker non trascina più tutto il processo ma viene loggata e il
+`RunDialog` riceve un report fallito, così la GUI non resta appesa.
+
+---
+
 ## v1.1.1 — 19 aprile 2026
 
 ### Fix — Scrinium non viene più sospeso/terminato quando sta in tray

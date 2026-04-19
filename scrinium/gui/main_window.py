@@ -228,10 +228,11 @@ class MainWindow(QMainWindow):
             if not self.tray.isVisible():
                 log.warning("Tray icon era invisibile: la ri-mostro")
                 self.tray.show()
-            log.debug(
-                "Tray heartbeat — visible=%s, window_visible=%s",
+            log.info(
+                "Tray heartbeat — visible=%s, window_visible=%s, active_dialog=%s",
                 self.tray.isVisible(),
                 self.isVisible(),
+                self._active_run_dialog is not None,
             )
         except RuntimeError:
             log.exception("Tray non più valida al keepalive")
