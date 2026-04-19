@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from scrinium.core.hasher import sha256_file
+from scrinium.core.hasher import sha256_decompressed_file, sha256_file
 from scrinium.core.profile import BackupProfile
 
 log = logging.getLogger(__name__)
@@ -184,13 +184,15 @@ def _is_excluded(rel_path: str, patterns: list[str]) -> bool:
     return False
 
 
-def _files_differ_size_mtime(src: Path, dst: Path) -> bool:
+def _files_differ_size_mtime(src: Path, dst: Path, compressed_dst: bool = False) -> bool:
     try:
         s = os.stat(_win_long(src))
         d = os.stat(_win_long(dst))
     except OSError:
         return True
-    if s.st_size != d.st_size:
+    # Con destinazione compressa le dimensioni differiscono per natura:
+    # ci basiamo sull'mtime (che preserviamo copistat dal sorgente).
+    if not compressed_dst and s.st_size != d.st_size:
         return True
     # Tolleranza 2s per FAT32 / differenze FS
     if abs(s.st_mtime - d.st_mtime) > 2:
@@ -257,11 +259,17 @@ def _copy_with_throttle(
     throttle_mb_s: float,
     control: RunControl,
     on_bytes: Callable[[int], None] | None = None,
+    compress: bool = False,
+    compress_level: int = 6,
 ) -> None:
     """Copia a blocchi con throttling opzionale.
 
     Se throttle_mb_s <= 0, nessun limite.
+    Se compress è True, il file di destinazione viene scritto come gzip
+    (stream compression durante la scrittura, nessuna copia intermedia).
     """
+    import gzip
+
     # Usa sempre percorsi con prefisso \\?\ su Windows per evitare
     # il limite MAX_PATH (260 caratteri) sui path profondi/lunghi.
     src_s = _win_long(src)
@@ -274,7 +282,12 @@ def _copy_with_throttle(
     tmp = dst.with_suffix(dst.suffix + ".scrinium-part")
     tmp_s = _win_long(tmp)
     try:
-        with open(src_s, "rb") as fi, open(tmp_s, "wb") as fo:
+        fi = open(src_s, "rb")
+        if compress:
+            fo = gzip.open(tmp_s, "wb", compresslevel=compress_level)
+        else:
+            fo = open(tmp_s, "wb")
+        try:
             while True:
                 if control.should_stop:
                     raise InterruptedError("Backup interrotto dall'utente")
@@ -294,7 +307,11 @@ def _copy_with_throttle(
                     if elapsed > 1.0:
                         written_in_window = 0
                         window_start = time.monotonic()
-        # Preserva metadati (mtime, permessi)
+        finally:
+            fo.close()
+            fi.close()
+        # Preserva mtime della sorgente sul file di destinazione
+        # (anche sulla versione compressa, così il confronto mtime funziona).
         shutil.copystat(src_s, tmp_s)
         os.replace(tmp_s, dst_s)
     except Exception:
@@ -369,12 +386,13 @@ class BackupEngine:
             self._emit(prog, force=True)
 
             # 2) Copia
+            dst_suffix = ".gz" if p.compress else ""
             for src_path, rel, size in items:
                 if self.control.should_stop:
                     break
                 self.control.wait_if_paused()
 
-                dst_path = dst / rel
+                dst_path = dst / (rel + dst_suffix)
                 prog.current_file = rel
                 prog.message = f"Copia: {rel}"
                 self._emit(prog)
@@ -466,13 +484,19 @@ class BackupEngine:
 
         # incremental / mirror: confronta
         if p.compare == "size_mtime":
-            if _files_differ_size_mtime(src, dst):
+            if _files_differ_size_mtime(src, dst, compressed_dst=p.compress):
                 return "update"
             return "skip"
-        # hash
+        # hash: se dst è compresso, confrontiamo hash del contenuto
+        # decompresso del .gz con quello del sorgente.
         try:
             s_hash = sha256_file(src, lambda: self.control.should_stop)
-            d_hash = sha256_file(dst, lambda: self.control.should_stop)
+            if p.compress:
+                d_hash = sha256_decompressed_file(
+                    dst, lambda: self.control.should_stop
+                )
+            else:
+                d_hash = sha256_file(dst, lambda: self.control.should_stop)
         except InterruptedError:
             raise
         except OSError:
@@ -501,12 +525,21 @@ class BackupEngine:
                     dst,
                     profile.throttle_mb_per_sec,
                     self.control,
+                    compress=profile.compress,
+                    compress_level=profile.compress_level,
                 )
                 if profile.verify_hash_after_copy:
                     prog.message = f"Verifica: {dst.name}"
                     self._emit(prog)
                     s_hash = sha256_file(src, lambda: self.control.should_stop)
-                    d_hash = sha256_file(dst, lambda: self.control.should_stop)
+                    if profile.compress:
+                        d_hash = sha256_decompressed_file(
+                            dst, lambda: self.control.should_stop
+                        )
+                    else:
+                        d_hash = sha256_file(
+                            dst, lambda: self.control.should_stop
+                        )
                     if s_hash != d_hash:
                         raise IOError(
                             f"Verifica hash fallita (src={s_hash[:8]} dst={d_hash[:8]})"
@@ -567,9 +600,12 @@ class BackupEngine:
         prog.message = "Rimozione file obsoleti in destinazione..."
         self._emit(prog, force=True)
 
-        src_set = {rel for _, rel, _ in src_items}
+        compressed = self.profile.compress
+        # Lista dei path che il backup dovrebbe aver prodotto in destinazione:
+        # se compressione attiva, hanno suffisso ".gz".
+        expected = {rel + (".gz" if compressed else "") for _, rel, _ in src_items}
         dst_set = _scan_destination(destination)
-        to_delete = dst_set - src_set
+        to_delete = dst_set - expected
         # Non rimuovere mai i file di log scritti da Scrinium nella destinazione
         to_delete.discard("scrinium-backup.log.txt")
         to_delete.discard("scrinium-backup.in-corso.log.txt")

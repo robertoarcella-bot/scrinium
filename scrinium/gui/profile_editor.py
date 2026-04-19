@@ -184,6 +184,25 @@ class ProfileEditor(QDialog):
             ),
         )
 
+        # -- Compressione --
+        self.chk_compress = QCheckBox(
+            "Comprimi i file in destinazione (formato .gz)"
+        )
+        self.chk_compress.setChecked(self.profile.compress)
+        form.addRow("Compressione", self.chk_compress)
+        form.addRow(
+            "",
+            _hint(
+                "Ogni file viene salvato in destinazione come «<nome>.gz» "
+                "(gzip standard). Riduce lo spazio occupato (molto su file di "
+                "testo/documenti, meno su PDF/immagini/video già compressi). "
+                "Per ripristinare un singolo file: click destro in Esplora file → "
+                "«Estrai tutto» (7-Zip, WinRAR, o utility simile). "
+                "La verifica hash confronta il contenuto DECOMPRESSO con il "
+                "sorgente, quindi l'integrità è garantita."
+            ),
+        )
+
         # -- Esclusioni --
         self.ed_excludes = QTextEdit()
         self.ed_excludes.setPlainText("\n".join(self.profile.exclude_patterns))
@@ -294,6 +313,7 @@ class ProfileEditor(QDialog):
         p.max_retries = self.sp_retries.value()
         p.throttle_mb_per_sec = self.sp_throttle.value()
         p.cloud_pace_mode = self.chk_cloud.isChecked()
+        p.compress = self.chk_compress.isChecked()
         p.exclude_patterns = [
             line.strip()
             for line in self.ed_excludes.toPlainText().splitlines()

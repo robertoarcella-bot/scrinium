@@ -5,6 +5,50 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.1.0 — 18 aprile 2026
+
+### Avvio automatico con Windows
+
+Nuova voce **File → Preferenze...** con la casella "Avvia Scrinium
+automaticamente all'accensione di Windows". Quando attiva:
+
+- Al login di Windows, Scrinium parte in background direttamente nella
+  barra di sistema (nessuna finestra mostrata).
+- Le schedulazioni automatiche girano senza che l'utente debba ricordarsi
+  di aprire l'applicazione.
+- Implementata tramite `HKCU\...\Run` + flag `--startup`: nessun privilegio
+  di amministratore richiesto; la preferenza è salvata nel profilo utente
+  corrente.
+
+### Compressione dei backup (formato .gz)
+
+Nuova casella **"Comprimi i file in destinazione (formato .gz)"** nell'editor
+del profilo. Quando attiva:
+
+- Ogni file è salvato come `<nome>.gz` in destinazione (gzip standard).
+- La compressione è applicata in streaming durante la scrittura — nessuna
+  copia intermedia né memoria RAM richiesta oltre al chunk da 1 MiB.
+- La **verifica d'integrità SHA-256** confronta il contenuto DECOMPRESSO
+  del `.gz` con quello del sorgente: l'integrità è garantita anche con
+  compressione attiva.
+- **Incrementale e mirror** continuano a funzionare: il confronto
+  `dimensione + data` usa solo l'mtime (che viene propagato dal sorgente
+  al `.gz`); il confronto `hash` apre il `.gz` al volo.
+- Livello di compressione: 6 (default gzip, bilanciato tra velocità e
+  rapporto di compressione).
+
+### Fix: la tray non causa più la chiusura prematura dell'app
+
+**Bug critico risolto.** Quando sia la main window sia la finestra di
+backup erano nascoste nella tray (es. durante un backup lungo
+minimizzato), Qt considerava "finita" l'applicazione al primo ciclo di
+eventi e chiamava `quit()`, interrompendo il worker del backup.
+Aggiunto `QApplication.setQuitOnLastWindowClosed(False)`: ora Scrinium
+resta attivo finché non si chiede esplicitamente *Esci* dal menu File o
+dalla tray.
+
+---
+
 ## v1.0.7 — 18 aprile 2026
 
 ### Modalità cloud per destinazioni Google Drive / OneDrive / iCloud

@@ -33,6 +33,7 @@ from scrinium import (
 from scrinium.core.engine import BackupReport
 from scrinium.core.profile import BackupProfile, ProfileStore
 from scrinium.core.scheduler import BackupScheduler
+from scrinium.gui.preferences_dialog import PreferencesDialog
 from scrinium.gui.profile_editor import ProfileEditor
 from scrinium.gui.run_dialog import RunDialog
 
@@ -148,6 +149,12 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         m_file = bar.addMenu("&File")
 
+        act_prefs = QAction("Preferenze...", self)
+        act_prefs.triggered.connect(self._show_preferences)
+        m_file.addAction(act_prefs)
+
+        m_file.addSeparator()
+
         act_hide = QAction("Nascondi nella barra di sistema", self)
         act_hide.setShortcut("Ctrl+H")
         act_hide.triggered.connect(self._hide_to_tray)
@@ -164,6 +171,9 @@ class MainWindow(QMainWindow):
         act_about = QAction("Informazioni su Scrinium...", self)
         act_about.triggered.connect(self._show_about)
         m_help.addAction(act_about)
+
+    def _show_preferences(self) -> None:
+        PreferencesDialog(self).exec()
 
     # ------------------------------------------------------------------
     # System tray

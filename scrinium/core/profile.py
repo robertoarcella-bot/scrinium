@@ -53,6 +53,10 @@ class BackupProfile:
     cloud_pace_mode: bool = False
     cloud_pace_sleep_sec: float = 1.0  # pausa tra un file e l'altro
     cloud_enospc_wait_sec: float = 120.0  # attesa iniziale su errore "disco pieno"
+    # Compressione: se attiva, ogni file in destinazione viene salvato come
+    # ``<nome>.gz`` (gzip). Incrementale e mirror continuano a funzionare.
+    compress: bool = False
+    compress_level: int = 6  # 1 = veloce, 9 = massima compressione
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     last_run: str | None = None  # ISO timestamp
     last_status: str | None = None  # "success" | "partial" | "failed"

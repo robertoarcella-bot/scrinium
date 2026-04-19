@@ -1,6 +1,7 @@
 """Calcolo hash file a blocchi (SHA-256)."""
 from __future__ import annotations
 
+import gzip
 import hashlib
 import os
 import sys
@@ -31,6 +32,26 @@ def sha256_file(path: Path, cancel: Callable[[], bool] | None = None) -> str:
     """
     h = hashlib.sha256()
     with open(_win_long(path), "rb") as f:
+        while True:
+            if cancel and cancel():
+                raise InterruptedError("Hash cancellato dall'utente")
+            chunk = f.read(CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sha256_decompressed_file(
+    path: Path, cancel: Callable[[], bool] | None = None
+) -> str:
+    """Calcola SHA-256 del contenuto DECOMPRESSO di un file gzip.
+
+    Usato per verificare che un .gz in destinazione contenga realmente lo
+    stesso contenuto del file sorgente (hash del plaintext, non del gzip).
+    """
+    h = hashlib.sha256()
+    with gzip.open(_win_long(path), "rb") as f:
         while True:
             if cancel and cancel():
                 raise InterruptedError("Hash cancellato dall'utente")
