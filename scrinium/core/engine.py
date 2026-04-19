@@ -48,6 +48,41 @@ _BUILTIN_EXCLUDES = (
 )
 
 
+def _acquire_wake_lock() -> None:
+    """Impedisce a Windows di sospendere il processo durante un backup.
+
+    Su Windows 10/11, un'app senza finestre visibili (es. nascosta in tray)
+    può essere messa in 'modern standby' e poi terminata. Con
+    ``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`` diciamo
+    al sistema di non sospenderci. Il flag resta attivo finché non viene
+    resettato con ES_CONTINUOUS da solo o finché il processo non termina.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        )
+        log.debug("Wake lock acquisito")
+    except Exception:
+        log.exception("Impossibile acquisire il wake lock")
+
+
+def _release_wake_lock() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS = 0x80000000
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+        log.debug("Wake lock rilasciato")
+    except Exception:
+        log.exception("Impossibile rilasciare il wake lock")
+
+
 def _win_long(path) -> str:
     """Restituisce il percorso in forma utilizzabile anche oltre MAX_PATH (260).
 
@@ -356,6 +391,11 @@ class BackupEngine:
         self._last_checkpoint_at = time.monotonic()
         log.info("[%s] START %s -> %s mode=%s", p.name, src, dst, p.mode)
 
+        # Impedisce a Windows di sospendere il processo durante il backup
+        # (altrimenti dopo qualche minuto di "apparente inattività" la app
+        # in tray può essere messa in modern standby e poi terminata).
+        _acquire_wake_lock()
+
         try:
             if not src.exists() or not src.is_dir():
                 msg = f"Sorgente non trovata o non è una cartella: {src}"
@@ -470,6 +510,7 @@ class BackupEngine:
                 self._write_destination_log(dst, final=True)
             except Exception:
                 log.exception("Errore scrittura log finale in destinazione")
+            _release_wake_lock()
 
     # -- Logica interna -----------------------------------------------------
 

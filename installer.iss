@@ -3,7 +3,7 @@
 ; e avere `dist\Scrinium.exe` già prodotto da build.bat.
 
 #define MyAppName "Scrinium"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.1"
 #define MyAppPublisher "Avv. Roberto Arcella e Commissione Informatica del Consiglio dell'Ordine degli Avvocati di Napoli"
 #define MyAppExeName "Scrinium.exe"
 

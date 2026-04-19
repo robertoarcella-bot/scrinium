@@ -212,6 +212,30 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
+        # Heartbeat: ogni 30 s verifica che l'icona tray sia viva e,
+        # in caso di problemi (es. WM_TASKBARCREATED dopo restart di
+        # Explorer), la re-mostra. Serve anche come segno di vita nel log
+        # quando l'app sta in background da molto tempo.
+        self._tray_heartbeat = QTimer(self)
+        self._tray_heartbeat.setInterval(30_000)
+        self._tray_heartbeat.timeout.connect(self._tray_keepalive)
+        self._tray_heartbeat.start()
+
+    def _tray_keepalive(self) -> None:
+        if not self.tray:
+            return
+        try:
+            if not self.tray.isVisible():
+                log.warning("Tray icon era invisibile: la ri-mostro")
+                self.tray.show()
+            log.debug(
+                "Tray heartbeat — visible=%s, window_visible=%s",
+                self.tray.isVisible(),
+                self.isVisible(),
+            )
+        except RuntimeError:
+            log.exception("Tray non più valida al keepalive")
+
     def _rebuild_tray_profiles_menu(self) -> None:
         """Popola dinamicamente il sottomenu 'Esegui backup' con i profili."""
         self.menu_tray_profiles.clear()
@@ -224,6 +248,12 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _checked, prof=p: self._run_from_tray(prof))
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        log.info(
+            "Tray activated: reason=%s, active_dialog=%s, visible=%s",
+            reason,
+            self._active_run_dialog is not None,
+            self.isVisible(),
+        )
         if reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick,
@@ -231,17 +261,27 @@ class MainWindow(QMainWindow):
             self._show_from_tray()
 
     def _show_from_tray(self) -> None:
+        log.info("Show from tray requested")
         self.showNormal()
         self.raise_()
         self.activateWindow()
         # Se c'è un backup in corso con la sua finestra nascosta, riaprila
         # contestualmente.
         if self._active_run_dialog is not None:
-            self._active_run_dialog.showNormal()
-            self._active_run_dialog.raise_()
-            self._active_run_dialog.activateWindow()
+            try:
+                self._active_run_dialog.showNormal()
+                self._active_run_dialog.raise_()
+                self._active_run_dialog.activateWindow()
+            except RuntimeError:
+                # Il dialog potrebbe essere stato distrutto da Qt; ignora.
+                log.warning(
+                    "RunDialog non più valido al ripristino dalla tray",
+                    exc_info=True,
+                )
+                self._active_run_dialog = None
 
     def _hide_to_tray(self) -> None:
+        log.info("Hide to tray (was visible=%s)", self.isVisible())
         if self.tray:
             self.hide()
             if not self._tray_message_shown:
@@ -261,6 +301,7 @@ class MainWindow(QMainWindow):
         self._launch_backup(profile)
 
     def _quit_app(self) -> None:
+        log.info("Quit app requested by user")
         ans = QMessageBox.question(
             self,
             "Uscire da Scrinium?",
@@ -268,7 +309,9 @@ class MainWindow(QMainWindow):
             "finché non riapri l'applicazione.\n\nVuoi uscire davvero?",
         )
         if ans != QMessageBox.StandardButton.Yes:
+            log.info("Quit cancelled by user")
             return
+        log.info("Quit confirmed — shutting down")
         self._really_quit = True
         if self.tray:
             self.tray.hide()

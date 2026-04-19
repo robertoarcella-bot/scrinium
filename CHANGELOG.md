@@ -5,6 +5,39 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.1.1 — 19 aprile 2026
+
+### Fix — Scrinium non viene più sospeso/terminato quando sta in tray
+
+Su Windows 10/11, un'applicazione senza finestre visibili e senza
+"lavoro percepibile" può essere messa in *modern standby* e
+successivamente terminata dal sistema operativo (politica di *Process
+Lifecycle Management*). Sintomo tipico: dopo qualche minuto con
+Scrinium minimizzato nella tray durante un backup, l'icona sparisce e
+il processo è terminato.
+
+Due correzioni per rimuovere il problema:
+
+- **Wake lock durante il backup**: il motore chiama
+  ``SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)``
+  all'avvio del run e lo rilascia al termine. Dice al sistema "sto
+  lavorando, non sospendermi". Non impedisce lo spegnimento dello
+  schermo (solo la sospensione del processo).
+- **Heartbeat della tray**: ogni 30 secondi Scrinium verifica che la
+  propria icona nella barra di sistema sia visibile e, in caso di
+  problemi (es. ``WM_TASKBARCREATED`` dopo un restart di Explorer), la
+  ri-mostra automaticamente.
+
+### Diagnostica estesa
+
+Ogni evento tray (click, show/hide), ogni richiesta di uscita e
+``QApplication.aboutToQuit`` vengono ora tracciati in
+``%APPDATA%\Scrinium\scrinium.log``, completi di stack trace dove
+rilevanti. In caso di problema futuro, il log dice esattamente *chi*
+ha richiesto la chiusura dell'applicazione.
+
+---
+
 ## v1.1.0 — 18 aprile 2026
 
 ### Avvio automatico con Windows
