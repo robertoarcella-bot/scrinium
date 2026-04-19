@@ -5,6 +5,42 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.1.3 — 19 aprile 2026
+
+### Opt-out dal power throttling di Windows 10/11
+
+Su Windows 10, Scrinium lasciato in tray per qualche minuto (anche
+con un backup cloud attivo) veniva **sospeso silenziosamente** dal
+sistema operativo e poi terminato al primo hover sull'icona della
+tray. Il log diagnostico (v1.1.2) ha confermato il pattern: zero
+`Tray heartbeat` nei 3-5 minuti di tray, `faulthandler.log` vuoto,
+nessun `aboutToQuit` — sintomi tipici di un processo congelato da
+EcoQoS e poi ucciso per "unresponsiveness".
+
+Il wake-lock introdotto in v1.1.1 (`SetThreadExecutionState`)
+impediva lo sleep del *sistema* ma non la sospensione del *singolo
+processo*: Windows 10 usa un meccanismo diverso, il *power
+throttling* (EcoQoS), gestito tramite `SetProcessInformation`.
+Questa release:
+
+- **Disattiva EcoQoS all'avvio del processo** tramite
+  `SetProcessInformation(ProcessPowerThrottling)` con state mask a
+  zero: comunica a Windows "questo processo non deve essere
+  rallentato né sospeso, neanche quando è senza finestre visibili".
+- **Wake lock di sistema reso persistente** per l'intera vita del
+  processo (non più solo durante il backup). Lo scheduler continua
+  a girare anche con la macchina apparentemente inattiva.
+- **Heartbeat della tray portato da 30 s a 10 s**, con primo battito
+  sparato immediatamente all'inizializzazione della tray. In caso di
+  futuro problema, il log ha granularità tripla per capire quando il
+  processo si è davvero fermato.
+
+Il codice del wake-lock è stato rimosso da `BackupEngine` (dove era
+condizionato alla singola sessione di backup) e centralizzato in
+`__main__.py`.
+
+---
+
 ## v1.1.2 — 19 aprile 2026
 
 ### Diagnostica dei crash silenti in tray

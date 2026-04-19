@@ -212,14 +212,19 @@ class MainWindow(QMainWindow):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
-        # Heartbeat: ogni 30 s verifica che l'icona tray sia viva e,
+        # Heartbeat: ogni 10 s verifica che l'icona tray sia viva e,
         # in caso di problemi (es. WM_TASKBARCREATED dopo restart di
         # Explorer), la re-mostra. Serve anche come segno di vita nel log
-        # quando l'app sta in background da molto tempo.
+        # quando l'app sta in background da molto tempo. L'intervallo è
+        # volutamente corto per avere granularità sufficiente a capire
+        # quando il processo eventualmente si ferma.
         self._tray_heartbeat = QTimer(self)
-        self._tray_heartbeat.setInterval(30_000)
+        self._tray_heartbeat.setInterval(10_000)
         self._tray_heartbeat.timeout.connect(self._tray_keepalive)
         self._tray_heartbeat.start()
+        # Primo battito immediato: così nel log compare subito un marker
+        # "tray avviata" senza dover aspettare l'intervallo del timer.
+        self._tray_keepalive()
 
     def _tray_keepalive(self) -> None:
         if not self.tray:

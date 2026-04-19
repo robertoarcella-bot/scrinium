@@ -1,4 +1,5 @@
 """Entry point: python -m scrinium."""
+import ctypes
 import faulthandler
 import logging
 import sys
@@ -20,6 +21,79 @@ log = logging.getLogger(__name__)
 # tutta la vita del processo, altrimenti il crash nativo non verrebbe
 # scritto.
 _faulthandler_file = None
+
+
+def _opt_out_power_throttling() -> None:
+    """Disattiva il power throttling (EcoQoS) su Windows 10/11.
+
+    Senza questa chiamata, Windows può mettere i thread in modalità
+    ``EcoQoS`` quando la finestra non è visibile (es. app in tray),
+    rallentandoli e, in alcune configurazioni, sospendendo il processo.
+    L'API ``SetProcessInformation(ProcessPowerThrottling)`` con state
+    mask a 0 comunica a Windows: "questo processo non deve essere
+    throttled, anche se sta in background".
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        # typedef struct _PROCESS_POWER_THROTTLING_STATE {
+        #     ULONG Version;
+        #     ULONG ControlMask;
+        #     ULONG StateMask;
+        # } PROCESS_POWER_THROTTLING_STATE;
+
+        class _PowerThrottling(ctypes.Structure):
+            _fields_ = [
+                ("Version", ctypes.c_ulong),
+                ("ControlMask", ctypes.c_ulong),
+                ("StateMask", ctypes.c_ulong),
+            ]
+
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+        ProcessPowerThrottling = 4  # PROCESS_INFORMATION_CLASS
+
+        info = _PowerThrottling(
+            Version=PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask=PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask=0,  # 0 = disabilita throttling
+        )
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetProcessInformation.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+        ]
+        kernel32.SetProcessInformation.restype = ctypes.c_int
+        handle = kernel32.GetCurrentProcess()
+        ok = kernel32.SetProcessInformation(
+            handle, ProcessPowerThrottling, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if ok:
+            log.info("Power throttling: opt-out riuscito (EcoQoS disattivato)")
+        else:
+            err = ctypes.get_last_error()
+            log.warning("SetProcessInformation ha fallito (err=%s)", err)
+    except Exception:
+        log.exception("Impossibile disattivare il power throttling")
+
+
+def _acquire_system_wake_lock() -> None:
+    """Impedisce a Windows di mettere il sistema in sleep mentre
+    Scrinium è in esecuzione. Lock persistente per l'intera vita del
+    processo: viene ripulito automaticamente alla terminazione."""
+    if sys.platform != "win32":
+        return
+    try:
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+        )
+        log.info("Wake lock di sistema acquisito (persistente)")
+    except Exception:
+        log.exception("Impossibile acquisire il wake lock di sistema")
 
 
 def _enable_faulthandler() -> None:
@@ -76,6 +150,8 @@ def main() -> int:
     setup_logging()
     _enable_faulthandler()
     _install_excepthooks()
+    _opt_out_power_throttling()
+    _acquire_system_wake_lock()
     log.info("Scrinium v%s avvio (argv=%s)", __version__, sys.argv)
 
     app = QApplication(sys.argv)
