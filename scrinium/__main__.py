@@ -6,12 +6,7 @@ import sys
 import threading
 import traceback
 
-from PyQt6.QtWidgets import QApplication
-
 from scrinium import __app_name__, __version__
-from scrinium.gui.main_window import MainWindow
-from scrinium.gui.theme import STYLESHEET
-from scrinium.utils import autostart
 from scrinium.utils.logger import setup_logging
 from scrinium.utils.paths import app_data_dir
 
@@ -145,11 +140,69 @@ def _log_aboutToQuit() -> None:
     log.warning("QApplication.aboutToQuit — chiusura in corso\n%s", stack)
 
 
+def _run_profile_headless(profile_id: str) -> int:
+    """Esegue un singolo profilo di backup senza GUI, salva l'esito e
+    termina. Usato dal Task Scheduler di Windows che invoca
+    ``Scrinium.exe --run-profile <id>`` ai trigger schedulati.
+    """
+    # Import locali per evitare di trascinare PyQt6 in modalità headless.
+    from scrinium.core.engine import BackupEngine
+    from scrinium.core.profile import ProfileStore
+
+    log.info("Modalità headless: esecuzione profilo id=%s", profile_id)
+    store = ProfileStore()
+    profile = store.get(profile_id)
+    if profile is None:
+        log.error("Profilo id=%s non trovato — niente da eseguire", profile_id)
+        return 2
+
+    log.info(
+        "[%s] AVVIO HEADLESS (sorgente=%s -> destinazione=%s, modo=%s)",
+        profile.name, profile.source, profile.destination, profile.mode,
+    )
+    try:
+        engine = BackupEngine(profile)
+        report = engine.run()
+    except Exception:
+        log.exception("Errore durante l'esecuzione headless del profilo '%s'", profile.name)
+        return 1
+
+    try:
+        store.update_run_info(profile.id, report.status, report.to_dict())
+    except Exception:
+        log.exception("Impossibile salvare l'esito del run su profiles.json")
+
+    log.info(
+        "[%s] FINE HEADLESS status=%s copiati=%d aggiornati=%d falliti=%d",
+        profile.name, report.status,
+        report.files_copied, report.files_updated, report.files_failed,
+    )
+    # Mappa lo status su exit code per l'audit di Task Scheduler:
+    # 0 = success, 1 = failed/partial/interrupted.
+    return 0 if report.status == "success" else 1
+
+
 def main() -> int:
     app_data_dir().mkdir(parents=True, exist_ok=True)
     setup_logging()
     _enable_faulthandler()
     _install_excepthooks()
+
+    # Modalità headless: eseguito dal Task Scheduler di Windows con
+    # `--run-profile <id>`. Nessuna GUI, nessun event loop Qt.
+    if "--run-profile" in sys.argv:
+        idx = sys.argv.index("--run-profile")
+        if idx + 1 >= len(sys.argv):
+            log.error("--run-profile richiede l'id del profilo come argomento")
+            return 2
+        return _run_profile_headless(sys.argv[idx + 1])
+
+    # Modalità GUI normale.
+    from PyQt6.QtWidgets import QApplication
+    from scrinium.gui.main_window import MainWindow
+    from scrinium.gui.theme import STYLESHEET
+    from scrinium.utils import autostart
+
     _opt_out_power_throttling()
     _acquire_system_wake_lock()
     log.info("Scrinium v%s avvio (argv=%s)", __version__, sys.argv)

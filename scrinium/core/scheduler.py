@@ -1,11 +1,14 @@
-"""Scheduler integrato (APScheduler) per l'esecuzione automatica dei profili.
+"""Scheduler integrato (APScheduler) — modalità *legacy*.
 
-Lo scheduler gira dentro l'applicazione: i profili con `schedule_cron`
-non vuoto vengono eseguiti automaticamente agli orari indicati quando
-l'app è in esecuzione (anche minimizzata in tray).
+Dalla v1.2.0 la modalità di default su Windows è il Task Scheduler di
+sistema (vedi :mod:`scrinium.utils.task_scheduler`), che sveglia il PC
+dallo sleep ed esegue i backup anche se Scrinium è chiuso o congelato.
 
-Per una schedulazione persistente anche a PC acceso ma app chiusa,
-usare il Task Scheduler di Windows richiamando `scrinium.exe --run-profile <id>`.
+Questo modulo resta come fallback per chi sceglie esplicitamente nelle
+*Preferenze* la modalità ``in_app``: lo scheduler gira dentro
+l'applicazione e i profili con ``schedule_cron`` non vuoto vengono
+eseguiti automaticamente agli orari indicati, ma **solo finché l'app
+è in esecuzione e responsiva** (e il PC è sveglio).
 """
 from __future__ import annotations
 

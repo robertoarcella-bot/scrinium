@@ -229,8 +229,10 @@ class ProfileEditor(QDialog):
             "",
             _hint(
                 "Lascia vuoto per nessuna schedulazione automatica. "
-                "La schedulazione integrata è attiva finché Scrinium è in esecuzione. "
-                "Formato: minuto ora giorno_mese mese giorno_settimana."
+                "Formato: minuto ora giorno_mese mese giorno_settimana.<br>"
+                "Su Windows i backup vengono affidati al <b>Task Scheduler</b> "
+                "del sistema, che sveglia il PC dallo sleep e li esegue anche "
+                "se Scrinium è chiuso (modalità modificabile in <i>Preferenze</i>)."
             ),
         )
 

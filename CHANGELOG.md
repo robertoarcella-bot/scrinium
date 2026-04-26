@@ -5,6 +5,45 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.2.0 — 26 aprile 2026
+
+### Schedulazione affidata al Task Scheduler di Windows
+
+Le versioni precedenti usavano APScheduler dentro il processo Scrinium:
+funzionava solo se l'app era aperta e responsiva, e il PC sveglio
+all'orario del cron. In pratica, con il portatile in sleep notturno i
+trigger venivano persi; al risveglio la finestra in tray risultava
+spesso congelata e andava killata, e fino al successivo riavvio
+manuale dell'app non partiva nessun backup.
+
+Da questa release, su Windows la schedulazione di default è delegata
+al **Task Scheduler** di sistema:
+
+- Per ogni profilo con `schedule_cron` impostato, Scrinium registra una
+  task `\Scrinium\<id>` con `WakeToRun=true` e `StartWhenAvailable=true`:
+  Windows **sveglia il PC dallo sleep** all'orario previsto, esegue il
+  backup, e se la macchina era spenta recupera la run appena torna
+  disponibile.
+- Le task invocano `Scrinium.exe --run-profile <id>`, una nuova modalità
+  **headless** del programma: nessuna GUI, esecuzione del singolo
+  profilo, salvataggio dell'esito su `profiles.json`, exit code mappato
+  sullo stato del backup. Funziona anche se l'utente non ha mai aperto
+  Scrinium dopo il login.
+- Il sync delle task è automatico al boot, a ogni salvataggio o
+  cancellazione di profilo, e al cambio di modalità nelle Preferenze.
+  Le orfane vengono ripulite.
+
+I cron supportati come trigger nativi del Task Scheduler sono i pattern
+realmente esprimibili come `CalendarTrigger`: `M H * * *` (giornaliero),
+`M H * * D` (settimanale), `M H D * *` (mensile), `M * * * *` (orario).
+
+La vecchia modalità APScheduler in-app resta disponibile come **fallback
+legacy** selezionabile dalla nuova sezione *Modalità di schedulazione*
+del dialog Preferenze, per chi preferisce non registrare task nel
+sistema.
+
+---
+
 ## v1.1.3 — 19 aprile 2026
 
 ### Opt-out dal power throttling di Windows 10/11

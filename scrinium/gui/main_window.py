@@ -36,6 +36,7 @@ from scrinium.core.scheduler import BackupScheduler
 from scrinium.gui.preferences_dialog import PreferencesDialog
 from scrinium.gui.profile_editor import ProfileEditor
 from scrinium.gui.run_dialog import RunDialog
+from scrinium.utils import preferences, task_scheduler
 
 log = logging.getLogger(__name__)
 
@@ -87,8 +88,18 @@ class MainWindow(QMainWindow):
         self._active_run_dialog = None
 
         self.store = ProfileStore()
-        self.scheduler = BackupScheduler(self.store, self._run_scheduled)
-        self.scheduler.reload()
+        self.prefs = preferences.load()
+
+        # Lo scheduler in-app (APScheduler) viene istanziato solo in modalità
+        # legacy. In modalità "task_scheduler" lasciamo a Windows il compito
+        # di svegliare la macchina e lanciare i backup, così Scrinium non deve
+        # restare aperto e responsivo per ore.
+        self.scheduler: BackupScheduler | None = None
+        if self.prefs.scheduler_mode == "in_app":
+            self.scheduler = BackupScheduler(self.store, self._run_scheduled)
+            self.scheduler.reload()
+        else:
+            self._sync_task_scheduler(verbose=False)
 
         self._build_ui()
         self._build_menu()
@@ -366,7 +377,7 @@ class MainWindow(QMainWindow):
         dlg = ProfileEditor(None, self)
         if dlg.exec():
             self.store.upsert(dlg.result_profile())
-            self.scheduler.reload()
+            self._reload_schedules()
             self._refresh_table()
 
     def _on_edit(self) -> None:
@@ -376,7 +387,7 @@ class MainWindow(QMainWindow):
         dlg = ProfileEditor(p, self)
         if dlg.exec():
             self.store.upsert(dlg.result_profile())
-            self.scheduler.reload()
+            self._reload_schedules()
             self._refresh_table()
 
     def _on_delete(self) -> None:
@@ -388,7 +399,10 @@ class MainWindow(QMainWindow):
         )
         if ans == QMessageBox.StandardButton.Yes:
             self.store.delete(p.id)
-            self.scheduler.reload()
+            if self.prefs.scheduler_mode == "task_scheduler":
+                # Rimuove subito la task Windows del profilo eliminato.
+                task_scheduler.unregister_task(p.id)
+            self._reload_schedules()
             self._refresh_table()
 
     def _on_run(self) -> None:
@@ -467,8 +481,69 @@ class MainWindow(QMainWindow):
             event.ignore()
             self._hide_to_tray()
             return
-        self.scheduler.shutdown()
+        if self.scheduler is not None:
+            self.scheduler.shutdown()
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Schedulazione: integrazione con Windows Task Scheduler
+    # ------------------------------------------------------------------
+
+    def _reload_schedules(self) -> None:
+        """Riallinea i trigger schedulati ai profili correnti."""
+        if self.prefs.scheduler_mode == "in_app":
+            if self.scheduler is None:
+                self.scheduler = BackupScheduler(self.store, self._run_scheduled)
+            self.scheduler.reload()
+        else:
+            self._sync_task_scheduler(verbose=True)
+
+    def _sync_task_scheduler(self, verbose: bool) -> None:
+        """Allinea le task ``\\Scrinium\\*`` ai profili con cron impostato."""
+        registered, removed, errors = task_scheduler.sync_profiles(
+            self.store.profiles, get_cron=lambda p: p.schedule_cron
+        )
+        if verbose and errors:
+            QMessageBox.warning(
+                self,
+                "Schedulazione: avvisi",
+                "Alcuni profili non sono stati registrati nel Task Scheduler:\n\n"
+                + "\n".join(f"• {e}" for e in errors)
+                + "\n\nQuei profili non verranno eseguiti automaticamente "
+                  "finché il cron non viene corretto.",
+            )
+        # Aggiorna anche la status bar (se disponibile a questo punto).
+        try:
+            if registered or removed:
+                self.statusBar().showMessage(
+                    f"Task Scheduler: {registered} attive, {removed} rimosse."
+                )
+        except (RuntimeError, AttributeError):
+            pass
+
+    def apply_scheduler_mode_change(self, new_mode: str) -> None:
+        """Chiamato dalle Preferenze quando l'utente cambia modalità."""
+        if new_mode == self.prefs.scheduler_mode:
+            return
+        log.info(
+            "Cambio modalità schedulazione: %s -> %s",
+            self.prefs.scheduler_mode, new_mode,
+        )
+        # Smonta la modalità precedente.
+        if self.prefs.scheduler_mode == "in_app" and self.scheduler is not None:
+            self.scheduler.shutdown()
+            self.scheduler = None
+        elif self.prefs.scheduler_mode == "task_scheduler":
+            removed = task_scheduler.remove_all_tasks()
+            log.info("Rimosse %d task Windows nella transizione", removed)
+        # Attiva la nuova modalità.
+        self.prefs.scheduler_mode = new_mode
+        preferences.save(self.prefs)
+        if new_mode == "in_app":
+            self.scheduler = BackupScheduler(self.store, self._run_scheduled)
+            self.scheduler.reload()
+        else:
+            self._sync_task_scheduler(verbose=True)
 
     def changeEvent(self, event) -> None:
         # Quando l'utente clicca il pulsante "_" nella title bar, Windows

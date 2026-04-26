@@ -1,6 +1,6 @@
 # Scrinium
 
-*Custodia dei tuoi documenti.*
+*Metti i tuoi documenti al sicuro.*
 
 Dal latino **scrinium**: la cassetta di cuoio e legno in cui i giureconsulti e
 i magistrati romani custodivano tavolette cerate, rotoli e documenti.
