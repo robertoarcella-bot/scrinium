@@ -5,6 +5,71 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.2.1 — 7 maggio 2026
+
+### Critico: copie incomplete dichiarate "success"
+
+In tutte le versioni precedenti il motore di backup poteva produrre
+backup parziali e dichiararli "success" nel report. La causa era
+``os.walk`` chiamato senza ``onerror``: ogni errore di traversata
+(``PermissionError`` su una sottocartella, file in lock esclusivo —
+PST di Outlook aperto, file Office in uso —, placeholder cloud non
+materializzato, drive di rete con timeout, junction point rotti)
+veniva ingoiato silenziosamente. I file che si trovavano *dentro* la
+sottocartella problematica sparivano dalla scansione e di conseguenza
+dal backup, **senza essere conteggiati come falliti**. Il run finiva
+con ``files_failed=0`` → ``status=success`` → log ottimistico, ma in
+destinazione mancavano interi rami della sorgente.
+
+In questa release:
+
+- ``os.walk`` ora usa una callback ``onerror`` che logga il path non
+  esaminato e lo registra come fallimento del run. Anche un solo
+  errore di traversata impedisce lo status "success".
+- Le ``stat()`` fallite durante la scansione vengono parimenti
+  registrate come failure invece di degradare silenziosamente la
+  dimensione a zero.
+- **Verifica strutturale** dopo la fase di copia: per ogni file
+  rilevato in scansione viene controllato che il corrispondente file
+  in destinazione esista e abbia dimensione coerente. I mancanti o
+  con dimensioni anomale vengono aggiunti a ``failures``. È un
+  controllo rapido (no hash) che chiude il cerchio: se per qualunque
+  motivo un file scansionato non è arrivato in destinazione, lo status
+  finale sarà "partial" o "failed", mai "success".
+
+> Raccomandato: dopo l'aggiornamento, lanciare manualmente ogni
+> profilo schedulato e confrontare il nuovo report con la
+> destinazione. Eventuali errori di scansione che prima erano
+> silenziosi adesso sono visibili nel campo "Fallimenti".
+
+### GUI: tabella aggiornata in tempo reale
+
+La tabella dei profili adesso ricarica ``profiles.json`` da disco
+ogni 15 s e prima di ogni salvataggio/eliminazione. Le esecuzioni
+headless del Task Scheduler aggiornano il file da fuori della GUI:
+prima la GUI, una volta caricata in memoria, lo ignorava. Sintomi
+risolti:
+
+- "Le schedulazioni sembrano non scattare" → in realtà scattavano,
+  ma la tabella mostrava il ``last_run`` del momento in cui avevi
+  aperto l'app.
+- Salvare/cancellare un profilo dalla GUI sovrascriveva
+  ``profiles.json`` con la versione in memoria, perdendo i
+  ``last_run`` aggiornati dalle task headless di quella giornata.
+  Adesso la GUI ricarica dal disco prima di scrivere.
+
+### Cap di retry per file in modalità non-cloud
+
+Aggiunto un budget di 5 minuti totali di sleep di backoff per file
+nelle modalità non-cloud. Senza cap, un backoff esponenziale
+(2 s, 4 s, 8 s, 16 s, …) su un file lockato (PST aperto, file Office
+in uso) poteva tenere la task del Task Scheduler in stato ``Running``
+per ore, posticipando di fatto i run successivi. La modalità cloud
+mantiene attese più lunghe perché lì sono intenzionali per consentire
+alla cache cloud di smaltirsi.
+
+---
+
 ## v1.2.0 — 26 aprile 2026
 
 ### Schedulazione affidata al Task Scheduler di Windows

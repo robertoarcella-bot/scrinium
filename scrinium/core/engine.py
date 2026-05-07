@@ -34,6 +34,15 @@ CHUNK = 1024 * 1024  # 1 MiB
 # A ~10 Hz la UI resta fluida anche con 100k+ file.
 PROGRESS_MIN_INTERVAL = 0.1
 
+# Cap di tempo speso in retry (sleep di backoff) su un singolo file in
+# modalità non-cloud. Senza questo cap, un backoff esponenziale che
+# raddoppia (2s, 4s, 8s, …) può tenere il backup fermo per ore su un
+# singolo file lockato (es. PST di Outlook aperto), bloccando la task
+# del Task Scheduler in stato Running indefinitamente.
+# In modalità cloud, il cap non si applica perché lì le attese lunghe
+# sono attese intenzionali per la cache cloud.
+MAX_RETRY_TOTAL_SLEEP_SEC = 300.0  # 5 minuti
+
 # File sempre esclusi, indipendentemente dai pattern utente.
 # desktop.ini e Thumbs.db: metadati Windows, spesso protetti/proibiti
 # ~$*: file di lock temporanei di Microsoft Office
@@ -205,11 +214,37 @@ def _scan_source(
     exclude: list[str],
     control: RunControl,
     on_progress: Callable[[Progress], None] | None,
-) -> list[tuple[Path, str, int]]:
-    """Ritorna lista di (src_abs, rel_path, size)."""
+) -> tuple[list[tuple[Path, str, int]], list[tuple[str, str]]]:
+    """Ritorna ``(items, scan_errors)``.
+
+    ``items`` è una lista di ``(src_abs, rel_path, size)``.
+    ``scan_errors`` è una lista di ``(path, errore)`` per ogni file o
+    cartella che la scansione non è riuscita a esaminare: PermissionError,
+    file in lock esclusivo (Outlook PST aperto, file Office in uso),
+    placeholder cloud che non si materializzano, drive di rete con
+    timeout, junction point rotti, ecc.
+
+    Senza ``onerror`` ``os.walk`` ingoia silenziosamente questi errori
+    e i file lì dentro spariscono dal backup *senza essere conteggiati
+    come falliti* — bug critico che produceva log "success" su backup
+    incompleti. Qui catturiamo ogni errore di traversata e lo riportiamo
+    al motore, che lo conteggia come failure e impedisce lo status
+    "success".
+    """
     out: list[tuple[Path, str, int]] = []
+    scan_errors: list[tuple[str, str]] = []
     prog = Progress(phase="scan", message="Scansione sorgente in corso...")
-    for root, dirs, files in os.walk(source):
+
+    def _on_walk_error(err: OSError) -> None:
+        # err.filename è il path che os.walk non è riuscito ad aprire
+        # (di solito una sottocartella). Tutti i file dentro quel ramo
+        # sono di fatto invisibili al backup: lo dichiariamo errore.
+        path = getattr(err, "filename", None) or "?"
+        msg = f"{type(err).__name__}: {err}"
+        log.warning("Scansione: impossibile esaminare %s — %s", path, msg)
+        scan_errors.append((str(path), msg))
+
+    for root, dirs, files in os.walk(source, onerror=_on_walk_error):
         if control.should_stop:
             break
         root_path = Path(root)
@@ -227,14 +262,20 @@ def _scan_source(
                 continue
             try:
                 size = src.stat().st_size
-            except OSError:
+            except OSError as e:
+                # Anche un singolo file non leggibile durante la scan è
+                # un errore: il file finisce comunque nella lista (così
+                # la copia tenterà di leggerlo e produrrà un fallimento
+                # esplicito), ma intanto annotiamo il problema.
+                log.warning("Scansione: stat fallito su %s — %s", src, e)
+                scan_errors.append((str(src), f"stat: {e}"))
                 size = 0
             out.append((src, rel, size))
             if len(out) % 500 == 0 and on_progress:
                 prog.files_total = len(out)
                 prog.message = f"Scansione... {len(out)} file trovati"
                 on_progress(prog)
-    return out
+    return out, scan_errors
 
 
 def _scan_destination(destination: Path) -> set[str]:
@@ -378,8 +419,23 @@ class BackupEngine:
                 return self.report
 
             # 1) Scan sorgente
-            items = _scan_source(src, p.exclude_patterns, self.control, self.on_progress)
+            items, scan_errors = _scan_source(
+                src, p.exclude_patterns, self.control, self.on_progress
+            )
             total_bytes = sum(s for _, _, s in items)
+
+            # Errori della scansione (cartelle non leggibili, stat falliti):
+            # vanno registrati come failure prima ancora di iniziare la copia,
+            # così uno status "success" non potrà più mascherare backup
+            # parziali per inaccessibilità di rami della sorgente.
+            if scan_errors:
+                for path, msg in scan_errors:
+                    self.report.failures.append((path, f"scansione: {msg}"))
+                self.report.files_failed += len(scan_errors)
+                log.warning(
+                    "[%s] %d errori in scansione sorgente — il backup non potrà essere 'success'",
+                    p.name, len(scan_errors),
+                )
 
             prog = Progress(
                 phase="copy",
@@ -441,6 +497,15 @@ class BackupEngine:
             # 3) Mirror: rimuovi file in destinazione non più in sorgente
             if p.mode == "mirror" and not self.control.should_stop:
                 self._mirror_cleanup(src, dst, items, prog)
+
+            # 3b) Verifica strutturale: ogni file scansionato deve esistere
+            # davvero in destinazione. Cattura il caso "il motore ha
+            # dichiarato copy/skip ma il file non c'è" che potrebbe
+            # accadere per bug futuri o per anomalie del file system.
+            # Niente hash qui: solo esistenza + size minima coerente.
+            # Saltato in caso di stop cooperativo (il backup è interrotto).
+            if not self.control.should_stop:
+                self._verify_structure(items, dst, prog)
 
             # 4) Fine
             prog.phase = "done"
@@ -513,6 +578,7 @@ class BackupEngine:
         """Copia con retry + verifica hash post-copia se abilitata."""
         last_err: Exception | None = None
         backoff = profile.retry_backoff_sec
+        sleep_budget_used = 0.0
 
         # Modalità cloud: più tentativi e backoff iniziale più alto per
         # dare tempo al servizio cloud (Google Drive) di smaltire la coda.
@@ -580,7 +646,20 @@ class BackupEngine:
                         wait,
                     )
                 if attempt < max_retries:
+                    # Cap del tempo totale di sleep su questo file
+                    # (solo per modalità non-cloud, per non bloccare la
+                    # task del Task Scheduler ore su un singolo file).
+                    if (
+                        not profile.cloud_pace_mode
+                        and sleep_budget_used + wait > MAX_RETRY_TOTAL_SLEEP_SEC
+                    ):
+                        log.warning(
+                            "Budget retry esaurito per %s (%.0fs già spesi): rinuncio",
+                            src, sleep_budget_used,
+                        )
+                        break
                     self._cancellable_sleep(wait)
+                    sleep_budget_used += wait
                     backoff *= 2
         if last_err:
             raise last_err
@@ -634,6 +713,91 @@ class BackupEngine:
                     os.rmdir(root)
                 except OSError:
                     pass
+
+    def _verify_structure(
+        self,
+        src_items: list[tuple[Path, str, int]],
+        destination: Path,
+        prog: Progress,
+    ) -> None:
+        """Verifica che ogni file scansionato in sorgente esista in
+        destinazione con dimensione coerente.
+
+        Non legge i contenuti (no hash): è un controllo strutturale
+        rapido, complementare alla verifica per-file fatta durante la
+        copia. Serve a impedire che un'anomalia di scan/copy renda un
+        backup incompleto invisibile nel report.
+
+        I mancanti vengono aggiunti a ``failures`` e contati in
+        ``files_failed``: lo status conseguente sarà "partial" o
+        "failed", mai "success".
+        """
+        prog.phase = "verify"
+        prog.message = "Verifica strutturale destinazione..."
+        self._emit(prog, force=True)
+
+        compressed = self.profile.compress
+        suffix = ".gz" if compressed else ""
+        missing = 0
+        size_mismatch = 0
+        checked = 0
+
+        for src_path, rel, src_size in src_items:
+            if self.control.should_stop:
+                break
+            dst_path = destination / (rel + suffix)
+            try:
+                dst_stat = os.stat(_win_long(dst_path))
+            except FileNotFoundError:
+                missing += 1
+                self.report.failures.append(
+                    (rel, "verifica: file mancante in destinazione")
+                )
+                self.report.files_failed += 1
+                continue
+            except OSError as e:
+                missing += 1
+                self.report.failures.append(
+                    (rel, f"verifica: impossibile accedere alla destinazione ({e})")
+                )
+                self.report.files_failed += 1
+                continue
+            # Senza compressione: la dimensione deve combaciare con la
+            # sorgente. Con compressione il file in destinazione è un
+            # gzip e di solito è più piccolo: in quel caso ci accontentiamo
+            # che esista e abbia almeno qualche byte (un .gz vuoto sarebbe
+            # < 20 byte). La verifica hash per-file durante la copia ha
+            # già confrontato il contenuto decompresso.
+            if not compressed:
+                if dst_stat.st_size != src_size:
+                    size_mismatch += 1
+                    self.report.failures.append(
+                        (
+                            rel,
+                            f"verifica: dimensioni diverse "
+                            f"(src={src_size} vs dst={dst_stat.st_size})",
+                        )
+                    )
+                    self.report.files_failed += 1
+            else:
+                if dst_stat.st_size < 20:
+                    size_mismatch += 1
+                    self.report.failures.append(
+                        (rel, f"verifica: file gzip troppo piccolo ({dst_stat.st_size} byte)")
+                    )
+                    self.report.files_failed += 1
+            checked += 1
+
+        if missing or size_mismatch:
+            log.warning(
+                "[%s] verifica strutturale: %d mancanti, %d con dimensioni anomale (su %d controllati)",
+                self.profile.name, missing, size_mismatch, checked,
+            )
+        else:
+            log.info(
+                "[%s] verifica strutturale OK (%d file controllati)",
+                self.profile.name, checked,
+            )
 
     def _emit(self, prog: Progress, force: bool = False) -> None:
         """Invia un progress alla GUI limitando la frequenza.

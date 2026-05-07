@@ -106,6 +106,19 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._refresh_table()
 
+        # Polling di profiles.json: le esecuzioni headless del Task
+        # Scheduler aggiornano last_run/last_status su disco mentre la
+        # GUI è aperta in tray. Senza un reload periodico, la tabella
+        # mostra dati congelati al momento dell'avvio dell'app — l'utente
+        # vede l'app "ferma all'ultimo run prima di averla aperta" anche
+        # se i backup notturni sono in realtà andati a buon fine.
+        # Reload solo se mtime del file è cambiato (no-op altrimenti).
+        self._profiles_mtime = self._current_profiles_mtime()
+        self._profiles_poll = QTimer(self)
+        self._profiles_poll.setInterval(15_000)  # 15 s
+        self._profiles_poll.timeout.connect(self._reload_profiles_if_changed)
+        self._profiles_poll.start()
+
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
@@ -376,6 +389,12 @@ class MainWindow(QMainWindow):
     def _on_new(self) -> None:
         dlg = ProfileEditor(None, self)
         if dlg.exec():
+            # Ricarica da disco prima di scrivere: le esecuzioni headless
+            # del Task Scheduler aggiornano last_run/last_status su
+            # profiles.json mentre la GUI è aperta in tray. Senza questo
+            # reload, il save() successivo le sovrascriverebbe con la
+            # versione in memoria (vecchia).
+            self.store.load()
             self.store.upsert(dlg.result_profile())
             self._reload_schedules()
             self._refresh_table()
@@ -386,6 +405,7 @@ class MainWindow(QMainWindow):
             return
         dlg = ProfileEditor(p, self)
         if dlg.exec():
+            self.store.load()
             self.store.upsert(dlg.result_profile())
             self._reload_schedules()
             self._refresh_table()
@@ -398,6 +418,7 @@ class MainWindow(QMainWindow):
             self, "Eliminare profilo?", f"Eliminare il profilo '{p.name}'?\n(I file già copiati restano sul disco.)"
         )
         if ans == QMessageBox.StandardButton.Yes:
+            self.store.load()
             self.store.delete(p.id)
             if self.prefs.scheduler_mode == "task_scheduler":
                 # Rimuove subito la task Windows del profilo eliminato.
@@ -497,6 +518,27 @@ class MainWindow(QMainWindow):
             self.scheduler.reload()
         else:
             self._sync_task_scheduler(verbose=True)
+
+    def _current_profiles_mtime(self) -> float:
+        try:
+            return self.store.path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _reload_profiles_if_changed(self) -> None:
+        """Se ``profiles.json`` è stato modificato sul disco da un'altra
+        istanza (tipicamente una task headless del Task Scheduler),
+        ricarica e aggiorna la tabella. No-op se mtime invariato."""
+        m = self._current_profiles_mtime()
+        if m == self._profiles_mtime:
+            return
+        self._profiles_mtime = m
+        try:
+            self.store.load()
+            self._refresh_table()
+            log.info("profiles.json modificato esternamente: tabella aggiornata")
+        except Exception:
+            log.exception("Errore reload profiles.json")
 
     def _sync_task_scheduler(self, verbose: bool) -> None:
         """Allinea le task ``\\Scrinium\\*`` ai profili con cron impostato."""
