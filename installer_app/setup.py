@@ -75,6 +75,69 @@ def _resource_path(rel: str) -> Path:
     return Path(base) / rel
 
 
+def _stop_running_instances() -> None:
+    """Termina ogni Scrinium.exe attivo prima di sovrascriverlo.
+
+    Necessario perché su Windows un eseguibile in uso è lockato dal
+    sistema e l'installer va in stallo (la progress bar resta
+    indeterminata). Le cause tipiche sono: l'app in tray con autostart,
+    una task headless del Task Scheduler ancora in esecuzione (status
+    Running), un crash che ha lasciato un processo orfano.
+
+    Si tenta in ordine: termine "gentile" via ``taskkill /IM`` (5s),
+    poi termine forzato ``/F`` se qualcuno è sopravvissuto.
+    """
+    creationflags = 0x08000000  # CREATE_NO_WINDOW
+    for force in (False, True):
+        cmd = ["taskkill", "/IM", APP_EXE]
+        if force:
+            cmd.append("/F")
+        try:
+            subprocess.run(
+                cmd, capture_output=True, timeout=10,
+                creationflags=creationflags, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # Piccola attesa per il rilascio dell'handle del file da parte del kernel.
+    import time as _t
+    _t.sleep(1.0)
+
+
+def _safe_overwrite(src: Path, dst: Path) -> None:
+    """Copia ``src`` su ``dst`` gestendo il caso in cui il target sia
+    ancora lockato dopo il kill (es. handle in chiusura, antivirus che
+    sta scansionando il file vecchio).
+
+    Strategia:
+    1. Tentativo diretto di ``shutil.copy2`` (caso normale).
+    2. Se WinError 32 (sharing violation), rinomina il vecchio
+       ``Scrinium.exe`` in ``Scrinium.exe.old-<pid>`` e copia il nuovo
+       al suo posto (il rename è permesso anche su file in uso),
+       poi pulisce il .old al prossimo avvio dell'installer.
+    3. Ultimo retry dopo breve attesa.
+    """
+    import time as _t
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            shutil.copy2(src, dst)
+            return
+        except PermissionError as e:
+            last_err = e
+            if attempt == 0 and dst.exists():
+                # Rinomina il vecchio: su NTFS è consentito anche se in
+                # uso, mentre la sovrascrittura no.
+                old = dst.with_suffix(dst.suffix + f".old-{os.getpid()}")
+                try:
+                    os.replace(dst, old)
+                except OSError:
+                    pass
+            _t.sleep(2.0)
+    if last_err:
+        raise last_err
+
+
 def _default_install_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / "Programs" / APP_NAME
@@ -362,10 +425,18 @@ class InstallerApp(tk.Tk):
             install_dir = Path(self.install_dir.get())
             install_dir.mkdir(parents=True, exist_ok=True)
 
+            # Se una versione precedente di Scrinium è in esecuzione
+            # (tray, task headless del Task Scheduler), Windows tiene
+            # Scrinium.exe lockato e la sovrascrittura va in stallo
+            # silenzioso. Chiudiamo proattivamente le istanze attive
+            # prima di copiare il nuovo eseguibile.
+            self._set_status("Chiusura istanze attive di Scrinium...")
+            _stop_running_instances()
+
             self._set_status("Copia di Scrinium.exe...")
             src_exe = _resource_path(APP_EXE)
             dst_exe = install_dir / APP_EXE
-            shutil.copy2(src_exe, dst_exe)
+            _safe_overwrite(src_exe, dst_exe)
 
             self._set_status("Copia dell'uninstaller...")
             # Copiamo questo stesso exe come uninstaller nella install dir

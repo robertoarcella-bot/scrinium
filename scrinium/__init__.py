@@ -4,7 +4,7 @@ Dal latino `scrinium`: la cassetta di cuoio e legno in cui i giureconsulti
 e i magistrati romani custodivano tavolette cerate, rotoli e documenti.
 """
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 __app_name__ = "Scrinium"
 __tagline__ = "Metti i tuoi documenti al sicuro"
 __release_date__ = "7 maggio 2026"

@@ -5,6 +5,31 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.2.3 — 9 maggio 2026
+
+### Fix: installer in stallo se Scrinium era già in esecuzione
+
+Aggiornando da una versione precedente, l'installer poteva
+restare bloccato sulla schermata "Copia di Scrinium.exe..." con la
+progress bar che oscilla all'infinito. La causa era una
+sovrascrittura tentata di ``Scrinium.exe`` mentre il file era ancora
+in uso: tipicamente l'app in tray con autostart, oppure una task
+headless del Task Scheduler ancora in stato ``Running``. Su Windows
+un eseguibile in uso è lockato dal sistema e ``shutil.copy2`` va in
+stallo.
+
+L'installer adesso:
+
+- chiude proattivamente le istanze attive di ``Scrinium.exe`` via
+  ``taskkill`` (gentile, poi forzato) prima della copia;
+- se il target risulta ancora lockato, rinomina il vecchio file in
+  ``Scrinium.exe.old-<pid>`` (consentito anche su file in uso) e
+  scrive il nuovo al suo posto;
+- ritenta fino a tre volte con breve attesa, gestendo l'eventuale
+  scansione antivirus dell'eseguibile appena scritto.
+
+---
+
 ## v1.2.2 — 7 maggio 2026
 
 ### Fix: l'installer mostrava una versione sbagliata
