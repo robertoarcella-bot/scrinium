@@ -27,7 +27,38 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "Scrinium"
-APP_VERSION = "1.1.3"
+
+
+def _read_app_version() -> str:
+    """Legge la versione da ``scrinium/__init__.py``.
+
+    Quando l'installer gira come exe PyInstaller, ``_MEIPASS`` punta
+    alla cartella temporanea che contiene il bundle: lo script di build
+    lì copia ``scrinium/__init__.py`` via ``--add-data``. In sviluppo
+    (lancio diretto di setup.py) il file vive nel repository.
+
+    Senza questa lettura dinamica, ogni release richiede di ricordarsi
+    di aggiornare *due* costanti di versione (qui e in
+    ``scrinium/__init__.py``); è già successo che disallineassero,
+    facendo apparire al wizard una versione sbagliata.
+    """
+    candidates = []
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidates.append(Path(base) / "scrinium" / "__init__.py")
+    here = Path(__file__).resolve().parent
+    candidates.append(here.parent / "scrinium" / "__init__.py")
+    for p in candidates:
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("__version__"):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+        except OSError:
+            continue
+    return "0.0.0"
+
+
+APP_VERSION = _read_app_version()
 APP_PUBLISHER = (
     "Avv. Roberto Arcella e Commissione Informatica del "
     "Consiglio dell'Ordine degli Avvocati di Napoli"

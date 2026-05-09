@@ -29,6 +29,7 @@ python -m PyInstaller ^
     --windowed ^
     --name Scrinium-Setup ^
     --add-data "dist\Scrinium.exe;." ^
+    --add-data "scrinium\__init__.py;scrinium" ^
     installer_app\setup.py || goto :err
 
 echo.

@@ -47,6 +47,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
             --name Scrinium-Setup `
             --add-data "dist/Scrinium.exe;." `
+            --add-data "scrinium/__init__.py;scrinium" `
             installer_app/setup.py
 
       - uses: actions/upload-artifact@v4

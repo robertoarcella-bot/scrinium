@@ -5,6 +5,26 @@ Formato: data più recente in alto. Le versioni seguono [Semantic Versioning](ht
 
 ---
 
+## v1.2.2 — 7 maggio 2026
+
+### Fix: l'installer mostrava una versione sbagliata
+
+Il wizard di ``Scrinium-Setup.exe`` aveva una costante di versione
+hardcoded in ``installer_app/setup.py`` (rimasta a "1.1.3"), che era
+disallineata da quella reale del package. L'utente vedeva
+"Installazione Scrinium 1.1.3" anche installando la 1.2.1, e la voce
+"App installate" di Windows registrava la versione sbagliata.
+
+L'installer ora **legge la versione a runtime** da
+``scrinium/__init__.py``, che è l'unica fonte di verità per la
+versione: il file viene incluso nel bundle PyInstaller via
+``--add-data scrinium/__init__.py;scrinium``. Niente più costante da
+ricordare di aggiornare a ogni release.
+
+Nessun cambiamento funzionale al motore di backup o allo scheduler.
+
+---
+
 ## v1.2.1 — 7 maggio 2026
 
 ### Critico: copie incomplete dichiarate "success"
